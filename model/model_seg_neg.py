@@ -881,9 +881,7 @@ class network(VisionTransformer):
         #B C D -> B C 1
         # multi_cls_pooling =  torch.mean(multi_cls,dim = -1)
         if refine_fmap:
-
-            fmap_refine = self.Fmap_proj_head(_x)
-            fmap_refine = self.to_2D(fmap_refine, h, w)
+            fmap_refine = _x4
         
         #B N D
         x_aux_cls = _x_aux.view(_x_aux.shape[0],_x_aux.shape[1],-1).permute(0,2,1)

@@ -37,24 +37,24 @@ parser.add_argument("--data_folder", default='../VOC2012', type=str, help="datas
 parser.add_argument("--list_folder", default='../datasets/voc', type=str, help="train/val/test list file")
 parser.add_argument("--num_classes", default=21, type=int, help="number of classes")
 parser.add_argument("--crop_size", default=448, type=int, help="crop_size in training")
-parser.add_argument("--local_crop_size", default=96*2, type=int, help="crop_size for local view")
+parser.add_argument("--local_crop_size", default=96, type=int, help="crop_size for local view")
 parser.add_argument("--ignore_index", default=255, type=int, help="random index")
 
 parser.add_argument("--work_dir", default="work_dir_voc_wseg", type=str, help="work_dir_voc_wseg")
 
 parser.add_argument("--train_set", default="train_aug", type=str, help="training split")
 parser.add_argument("--val_set", default="val", type=str, help="validation split")
-parser.add_argument("--spg", default=1, type=int, help="samples_per_gpu")
-parser.add_argument("--scales", default=(0.95, 1.15), help="random rescale in training")
+parser.add_argument("--spg", default=2, type=int, help="samples_per_gpu")
+parser.add_argument("--scales", default=(0.5, 2), help="random rescale in training")
 
 parser.add_argument("--optimizer", default='PolyWarmupAdamW', type=str, help="optimizer")
-parser.add_argument("--lr", default=1e-5, type=float, help="learning rate")
+parser.add_argument("--lr", default=6e-5, type=float, help="learning rate")
 parser.add_argument("--warmup_lr", default=6e-6, type=float, help="warmup_lr")
 parser.add_argument("--wt_decay", default=1e-2, type=float, help="weights decay")
 parser.add_argument("--betas", default=(0.9, 0.999), help="betas for Adam")
 parser.add_argument("--power", default=0.9, type=float, help="poweer factor for poly scheduler")
 
-parser.add_argument("--max_iters", default=40000, type=int, help="max training iters")
+parser.add_argument("--max_iters", default=20000, type=int, help="max training iters")
 parser.add_argument("--log_iters", default=200, type=int, help=" logging iters")
 parser.add_argument("--eval_iters", default=2000, type=int, help="validation iters")
 parser.add_argument("--warmup_iters", default=1500, type=int, help="warmup_iters")
@@ -73,15 +73,15 @@ parser.add_argument("--temp", default=0.5, type=float, help="temp")
 parser.add_argument("--momentum", default=0.9, type=float, help="temp")
 parser.add_argument("--aux_layer", default=-3, type=int, help="aux_layer")
 
-parser.add_argument("--seed", default=1, type=int, help="fix random seed")
+parser.add_argument("--seed", default=0, type=int, help="fix random seed")
 parser.add_argument("--save_ckpt",default=True, action="store_true", help="save_ckpt")
 
-parser.add_argument("--local_rank", default=0, type=int, help="local_rank")
+parser.add_argument("--local_rank", default=8, type=int, help="local_rank")
 parser.add_argument("--num_workers", default=10, type=int, help="num_workers")
 parser.add_argument('--backend', default='nccl')
 
 os.environ['MASTER_ADDR'] = 'localhost'
-os.environ['MASTER_PORT'] = '5679'
+os.environ['MASTER_PORT'] = '5680'
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
 logging.getLogger().setLevel(logging.INFO)
@@ -97,6 +97,16 @@ def setup_seed(seed):
 
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
+
+def show_mask(cams_aux,cls_label,low_thre,high_thre):
+    import matplotlib.pyplot as plt
+    roi_mask_crop = cam_to_roi_mask2(cams_aux.detach(), cls_label=cls_label, low_thre=low_thre, hig_thre=high_thre)
+    plt.imshow((roi_mask_crop[0]).cpu(), cmap='jet', vmin=-2, vmax=20)
+    plt.colorbar()
+    plt.title("aux_mask")
+    
+    plt.savefig(f'aux_mask.png')
+    plt.close()
 
 def validate(model=None, data_loader=None, args=None):
 
@@ -213,7 +223,7 @@ def train(args=None):
         aux_layer=args.aux_layer
     )
     CPC_loss = CPCLoss().cuda()
-    trained_state_dict = torch.load('/home/zhonggai/python-work-space/WSSS-work/DEFormer/DEFormer/scripts/pretrained/checkpoints/default_model_iter_20000.pth', map_location="cpu")
+    trained_state_dict = torch.load('/home/zhonggai/python/DEFormer/ToCo/ToCo/scripts/pretrained/checkpoints/jx_vit_base_p16_224-80ecf9dd.pth', map_location="cpu")
 
     new_state_dict = OrderedDict()
     if 'model' in trained_state_dict:
@@ -297,9 +307,9 @@ def train(args=None):
             img_name, inputs, cls_label, img_box, crops,image_origin = next(train_loader_iter)
 
         
-        input_image = TF.to_pil_image(image_origin[0].permute(2,0,1))
-        input_image.save('input_image.png')
-        print(img_name)
+        # input_image = TF.to_pil_image(image_origin[0].permute(2,0,1))
+        # input_image.save('input_image.png')
+        # print(img_name)
 
         inputs = inputs.to(device, non_blocking=True)
         inputs_denorm = imutils.denormalize_img2(inputs.clone())
@@ -327,8 +337,8 @@ def train(args=None):
         cls_loss = F.multilabel_soft_margin_loss(cls, cls_label)
         cls_loss_aux = F.multilabel_soft_margin_loss(cls_aux, cls_label)
 
-        cpc_loss = CPC_loss(fmap_refined,cams.detach(),cls_label,args.high_thre,args.low_thre,args.bkg_thre) 
-   
+        # cpc_loss = CPC_loss(fmap_refined,cams.detach(),cls_label,args.high_thre,args.low_thre,args.bkg_thre) 
+        cpc_loss = torch.tensor(0)
         # ctc_loss crop出来的结果过网络得cls，计算loss
         ctc_loss = CTC_loss(out_s, out_t, flags,cls_label)
         # ctc_loss = 
@@ -340,9 +350,8 @@ def train(args=None):
         segs = F.interpolate(segs, size=refined_pseudo_label.shape[1:], mode='bilinear', align_corners=False)
         #segs是粗分割lfov的结果 refined_pseudo_label是自己生成的伪标签（cam是最后给出的cam）
 
-        # seg_loss = get_seg_loss(segs, refined_pseudo_label.type(torch.long), ignore_index=args.ignore_index)
-        seg_loss = torch.tensor(0)
-        reg_loss = torch.tensor(0)
+        seg_loss = get_seg_loss(segs, refined_pseudo_label.type(torch.long), ignore_index=args.ignore_index)
+
         # reg_loss = get_energy_loss(img=inputs, logit=segs, label=refined_pseudo_label, img_box=img_box, loss_layer=loss_layer)
 
         # ptc loss   
@@ -352,31 +361,14 @@ def train(args=None):
         _, pseudo_label_aux = cam_to_label_resized(resized_cams_aux.detach(), cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=args.bkg_thre, high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index,printornot=False,clip = False)
         #伪标签是2 20 28 28，这个用于分出pair
         aff_mask = label_to_aff_mask(pseudo_label_aux)
-        ptc_loss_1 = get_masked_ptc_loss(fmap, aff_mask)
+        ptc_loss = get_masked_ptc_loss(fmap, aff_mask)
         
-        # resized_cams = F.interpolate(cams, size=fmap.shape[2:], mode="bilinear", align_corners=False)
-        # _, pseudo_label_cam = cam_to_label_resized(resized_cams.detach(), cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=args.bkg_thre, high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index,printornot=True,clip = True)
-        # #伪标签是2 20 28 28，这个用于分出pair
-        # aff_mask = label_to_aff_mask(pseudo_label_cam)
-        # ptc_loss_2 = get_masked_ptc_loss(fmap_refined, aff_mask)
-        # print(ptc_loss_2)
-        
-        ptc_loss = ptc_loss_1 
-        # torch.autograd.set_detect_anomaly(True)
-        # resized_cams_grad = F.interpolate(cam_grad, size=inputs.shape[-2:], mode="bilinear", align_corners=False)
-        # cam_contrast_loss = cam_patch_contrast_loss(resized_cams_grad ,cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=args.bkg_thre, high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index)
 
-        # ptc_loss = get_ptc_loss(fmap, low_fmap)
-        # resized_cams = F.interpolate(cams.detach(), size=fmap.shape[2:], mode="bilinear", align_corners=False)
-        # cam_contrast_loss = cam_patch_contrast_loss(resized_cams.detach(), cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=args.bkg_thre, high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index,fmap = fmap)
+        if n_iter <= 2000:
+            loss = 1.0 * cls_loss + 1.0 * cls_loss_aux + args.w_ptc * ptc_loss  + 0.0 * seg_loss 
+        else:
+            loss = 1.0 * cls_loss + 1.0 * cls_loss_aux + args.w_ptc * ptc_loss + args.w_seg * seg_loss 
 
-        # warmup 2000轮后面一般就不会出现nan了
-        # if n_iter <= 2000:
-        #     loss = 1.0 * cls_loss + 1.0 * cls_loss_aux + args.w_ptc * ptc_loss +  0 * ctc_loss + 0 * seg_loss + 0* reg_loss
-        # if n_iter <= 10000:   
-        #     loss = 1.0 * cls_loss + 1.0 * cls_loss_aux + args.w_ptc * ptc_loss + args.w_ctc * ctc_loss + args.w_seg * seg_loss + args.w_reg * reg_loss + 0.2*cam_contrast_loss
-        # else:
-        loss = 1.0 * cls_loss + 1.0 * cls_loss_aux +  0.2 * ptc_loss + 0.1 * ctc_loss + 0.1*cpc_loss
         # 如果你增加了 cls_loss 的权重值，使其在整体优化中起到更大的作用，那么模型在训练过程中会更加关注优化 cls_loss
         cls_pred = (cls > 0).type(torch.int16)
         cls_score = evaluate.multilabel_score(cls_label.cpu().numpy()[0], cls_pred.cpu().numpy()[0])
@@ -384,11 +376,11 @@ def train(args=None):
         avg_meter.add({
             'cls_loss': cls_loss.item(),
             'ptc_loss': ptc_loss.item(),
-            'ctc_loss': ctc_loss.item(),
+            'aur_loss': ctc_loss.item(),
             'cls_loss_aux': cls_loss_aux.item(),
             'seg_loss': seg_loss.item(),
             'cls_score': cls_score.item(),
-            'cpc_loss': cpc_loss.item()
+            'dcc_loss': cpc_loss.item()
         })
 
         optim.zero_grad()
@@ -399,26 +391,26 @@ def train(args=None):
         torch.cuda.empty_cache()  # 清理CUDA显存中的垃圾数据
         if n_iter % 100 == 0:
             print('n_iter:',n_iter)
-            print('cls_loss',cls_loss,'\n','cls_loss_aux',cls_loss_aux,'\n','seg_loss',seg_loss,'\n','ctc_loss',ctc_loss,'\n','\n','ptc_loss',ptc_loss,'cpc_loss',cpc_loss)
+            print('cls_loss',cls_loss,'\n','cls_loss_aux',cls_loss_aux,'\n','seg_loss',seg_loss,'\n','aur_loss',ctc_loss,'\n','\n','ptc_loss',ptc_loss,'dcc_loss',cpc_loss)
             # print(loss)
         if (n_iter + 1) % args.log_iters == 0:
 
             delta, eta = cal_eta(time0, n_iter + 1, args.max_iters)
             cur_lr = optim.param_groups[0]['lr']
 
-            if args.local_rank == 0:
-                logging.info("Iter: %d; Elasped: %s; ETA: %s; LR: %.3e; cls_loss: %.4f, cls_loss_aux: %.4f, ptc_loss: %.4f, ctc_loss: %.4f, cpc_loss: %.4f..." % (n_iter + 1, delta, eta, cur_lr, avg_meter.pop('cls_loss'), avg_meter.pop('cls_loss_aux'), avg_meter.pop('ptc_loss'), avg_meter.pop('ctc_loss'), avg_meter.pop('cpc_loss')))
+
+            logging.info("Iter: %d; Elasped: %s; ETA: %s; LR: %.3e; cls_loss: %.4f, cls_loss_aux: %.4f, ptc_loss: %.4f, aur_loss: %.4f, dcc_loss: %.4f..." % (n_iter + 1, delta, eta, cur_lr, avg_meter.pop('cls_loss'), avg_meter.pop('cls_loss_aux'), avg_meter.pop('ptc_loss'), avg_meter.pop('aur_loss'), avg_meter.pop('dcc_loss')))
 
         if (n_iter+1) % 2000 == 0:
             # ckpt_name = os.path.join(args.ckpt_dir, "w/oPSA_model_iter_%d.pth" % (n_iter + 1))
-            if args.local_rank == 0:
-                logging.info('Validating...')
+
+            logging.info('Validating...')
                 # if args.save_ckpt:
                 #     torch.save(model.state_dict(), ckpt_name)
             val_cls_score, tab_results = validate(model=model, data_loader=val_loader, args=args)
-            if args.local_rank == 0:
-                logging.info("val cls score: %.6f" % (val_cls_score))
-                logging.info("\n"+tab_results)
+
+            logging.info("val cls score: %.6f" % (val_cls_score))
+            logging.info("\n"+tab_results)
         if (n_iter + 1) % 10000 == 0:
             if args.save_ckpt:
                 print('saving checkpoint')
@@ -443,7 +435,7 @@ if __name__ == "__main__":
     args.ckpt_dir = os.path.join(args.work_dir, "checkpoints")
     args.pred_dir = os.path.join(args.work_dir, "predictions")
 
-    if args.local_rank ==0:
+    if args.local_rank ==8:
         os.makedirs(args.ckpt_dir, exist_ok=True)
         os.makedirs(args.pred_dir, exist_ok=True)
 
@@ -456,12 +448,3 @@ if __name__ == "__main__":
     setup_seed(args.seed)
     train(args=args)
 
-def show_mask(cams_aux,cls_label,low_thre,high_thre):
-    import matplotlib.pyplot as plt
-    roi_mask_crop = cam_to_roi_mask2(cams_aux.detach(), cls_label=cls_label, low_thre=low_thre, hig_thre=high_thre)
-    plt.imshow((roi_mask_crop[0]).cpu(), cmap='jet', vmin=-2, vmax=20)
-    plt.colorbar()
-    plt.title("aux_mask")
-    
-    plt.savefig(f'aux_mask.png')
-    plt.close()

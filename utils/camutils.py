@@ -573,12 +573,12 @@ def single_class_crop(images,cls_label = None, roi_mask=None, crop_num=8, crop_s
 
         temp_crops = torch.zeros(size=(b, crop_num, c, crop_size, crop_size)).to(images.device)
         
-        plt.imshow((roi_mask[i1]).cpu(), cmap='jet', vmin=-2, vmax=20)
-        plt.colorbar()
-        plt.title("full_mask")
+        # plt.imshow((roi_mask[i1]).cpu(), cmap='jet', vmin=-2, vmax=20)
+        # plt.colorbar()
+        # plt.title("full_mask")
         
-        plt.savefig(f'full_mask.png')
-        plt.close()
+        # plt.savefig(f'full_mask.png')
+        # plt.close()
 
         margin = 0
 

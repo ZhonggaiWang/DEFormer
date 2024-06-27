@@ -10,7 +10,7 @@ import torch.distributed as dist
 import matplotlib.pyplot as plt
 from torch.nn.parameter import Parameter
 sys.path.append("./wrapper/bilateralfilter/build/lib.linux-x86_64-3.8")
-from bilateralfilter import bilateralfilter, bilateralfilter_batch
+# from bilateralfilter import bilateralfilter, bilateralfilter_batch
 
 def get_masked_ptc_loss(inputs, mask):
 
