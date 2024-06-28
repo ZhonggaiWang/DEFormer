@@ -76,7 +76,7 @@ parser.add_argument("--aux_layer", default=-3, type=int, help="aux_layer")
 parser.add_argument("--seed", default=0, type=int, help="fix random seed")
 parser.add_argument("--save_ckpt",default=True, action="store_true", help="save_ckpt")
 
-parser.add_argument("--local_rank", default=8, type=int, help="local_rank")
+parser.add_argument("--local_rank", default=0, type=int, help="local_rank")
 parser.add_argument("--num_workers", default=10, type=int, help="num_workers")
 parser.add_argument('--backend', default='nccl')
 
