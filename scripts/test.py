@@ -44,7 +44,7 @@ parser.add_argument("--work_dir", default="work_dir_voc_wseg", type=str, help="w
 
 parser.add_argument("--train_set", default="train_aug", type=str, help="training split")
 parser.add_argument("--val_set", default="val", type=str, help="validation split")
-parser.add_argument("--spg", default=2, type=int, help="samples_per_gpu")
+parser.add_argument("--spg", default=6, type=int, help="samples_per_gpu")
 parser.add_argument("--scales", default=(0.5, 2), help="random rescale in training")
 
 parser.add_argument("--optimizer", default='PolyWarmupAdamW', type=str, help="optimizer")
@@ -54,7 +54,7 @@ parser.add_argument("--wt_decay", default=1e-2, type=float, help="weights decay"
 parser.add_argument("--betas", default=(0.9, 0.999), help="betas for Adam")
 parser.add_argument("--power", default=0.9, type=float, help="poweer factor for poly scheduler")
 
-parser.add_argument("--max_iters", default=20000, type=int, help="max training iters")
+parser.add_argument("--max_iters", default=10000, type=int, help="max training iters")
 parser.add_argument("--log_iters", default=200, type=int, help=" logging iters")
 parser.add_argument("--eval_iters", default=2000, type=int, help="validation iters")
 parser.add_argument("--warmup_iters", default=1500, type=int, help="warmup_iters")
@@ -76,13 +76,14 @@ parser.add_argument("--aux_layer", default=-3, type=int, help="aux_layer")
 parser.add_argument("--seed", default=0, type=int, help="fix random seed")
 parser.add_argument("--save_ckpt",default=True, action="store_true", help="save_ckpt")
 
-parser.add_argument("--local_rank", default=0, type=int, help="local_rank")
+parser.add_argument('--local-rank', type=int, default=0)
 parser.add_argument("--num_workers", default=10, type=int, help="num_workers")
 parser.add_argument('--backend', default='nccl')
 
-os.environ['MASTER_ADDR'] = 'localhost'
-os.environ['MASTER_PORT'] = '5680'
-os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+# os.environ['MASTER_ADDR'] = 'localhost'
+# os.environ['MASTER_PORT'] = '5680'
+# os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+# os.environ['CUDA_VISIBLE_DEVICES']='0,1,2,3'
 
 logging.getLogger().setLevel(logging.INFO)
 
@@ -164,8 +165,8 @@ def validate(model=None, data_loader=None, args=None):
 def train(args=None):
 
     torch.cuda.set_device(args.local_rank)
-    # dist.init_process_group(backend=args.backend, )
-    dist.init_process_group(backend='nccl', init_method='env://', rank = 0, world_size = 1)
+    dist.init_process_group(backend=args.backend)
+    # dist.init_process_group(backend='nccl', init_method='env://', rank = 0, world_size = 1)
     logging.info("Total gpus: %d, samples per gpu: %d..."%(dist.get_world_size(), args.spg))
 
     time0 = datetime.datetime.now()
@@ -223,7 +224,7 @@ def train(args=None):
         aux_layer=args.aux_layer
     )
     CPC_loss = CPCLoss().cuda()
-    trained_state_dict = torch.load('/home/zhonggai/python/DEFormer/ToCo/ToCo/scripts/pretrained/checkpoints/jx_vit_base_p16_224-80ecf9dd.pth', map_location="cpu")
+    trained_state_dict = torch.load('/home/zhonggai/python-work-space/DEFormer/DEFormer/jx_vit_base_p16_224-80ecf9dd.pth', map_location="cpu")
 
     new_state_dict = OrderedDict()
     if 'model' in trained_state_dict:
@@ -435,7 +436,7 @@ if __name__ == "__main__":
     args.ckpt_dir = os.path.join(args.work_dir, "checkpoints")
     args.pred_dir = os.path.join(args.work_dir, "predictions")
 
-    if args.local_rank ==8:
+    if args.local_rank ==0:
         os.makedirs(args.ckpt_dir, exist_ok=True)
         os.makedirs(args.pred_dir, exist_ok=True)
 
