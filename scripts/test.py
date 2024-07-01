@@ -328,8 +328,8 @@ def train(args=None):
         local_crops, flags= single_class_crop(images=inputs, cls_label = cls_label,roi_mask=roi_mask, crop_num=ncrops-2, crop_size=args.local_crop_size)
         roi_crops = crops[:2] + local_crops #全局的两张图 + local的多张图
 
-        # input_image = TF.to_pil_image(image_origin[0].permute(2,0,1))
-        # input_image.save('input_image.png')
+        input_image = TF.to_pil_image(image_origin[0].permute(2,0,1))
+        input_image.save('input_image.png')
         
     
         cls, segs, fmap, cls_aux, out_t, out_s,fmap_refined = model(inputs, crops=roi_crops, n_iter=n_iter,select_k = 1,refine_fmap = True)
@@ -368,7 +368,7 @@ def train(args=None):
         if n_iter <= 2000:
             loss = 1.0 * cls_loss + 1.0 * cls_loss_aux + args.w_ptc * ptc_loss  + 0.0 * seg_loss 
         else:
-            loss = 1.0 * cls_loss + 1.0 * cls_loss_aux + args.w_ptc * ptc_loss + args.w_seg * seg_loss 
+            loss = 1.0 * cls_loss + 1.0 * cls_loss_aux + args.w_ptc * ptc_loss + 0.0 * seg_loss 
 
         # 如果你增加了 cls_loss 的权重值，使其在整体优化中起到更大的作用，那么模型在训练过程中会更加关注优化 cls_loss
         cls_pred = (cls > 0).type(torch.int16)
@@ -413,14 +413,15 @@ def train(args=None):
             logging.info("val cls score: %.6f" % (val_cls_score))
             logging.info("\n"+tab_results)
         if (n_iter + 1) % 10000 == 0:
-            if args.save_ckpt:
-                print('saving checkpoint')
-                state_dict = {
-                    'model': model.state_dict(),
-                    'CPC_loss': CPC_loss
-                }
-                ckpt_name = os.path.join(args.ckpt_dir, "default_model_iter_%d.pth" % (n_iter + 1))
-                torch.save(state_dict, ckpt_name)
+            if args.local_rank ==0:
+                if args.save_ckpt:
+                    print('saving checkpoint')
+                    state_dict = {
+                        'model': model.state_dict(),
+                        'CPC_loss': CPC_loss
+                    }
+                    ckpt_name = os.path.join(args.ckpt_dir, "default_model_iter_%d.pth" % (n_iter + 1))
+                    torch.save(state_dict, ckpt_name)
         
             
 
