@@ -16,7 +16,7 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 from datasets import voc as voc
-from model.losses import get_masked_ptc_loss, get_seg_loss, CTCLoss_neg, DenseEnergyLoss, get_energy_loss,CPCLoss
+from model.losses import get_masked_ptc_loss, get_seg_loss, CTCLoss_neg, DenseEnergyLoss, get_energy_loss,CPCLoss,get_spacial_bce_loss
 from model.model_seg_neg import network
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
@@ -24,7 +24,7 @@ from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 from model.PAR import PAR
 from utils import evaluate, imutils, optimizer
-from utils.camutils import single_class_crop,cam_to_label, cam_to_roi_mask2, multi_scale_cam2, label_to_aff_mask, refine_cams_with_bkg_v2, crop_from_roi_neg,cam_patch_contrast_loss,multi_scale_cam_test,crop_from_roi_posi,cam_to_label_resized  #,netural_cam_loss
+from utils.camutils import single_class_crop,cam_to_label, cam_to_roi_mask2, multi_scale_cam2, label_to_aff_mask, refine_cams_with_bkg_v2, crop_from_roi_neg,cam_patch_contrast_loss,multi_scale_cam_test,crop_from_roi_posi,cam_to_label_resized,get_per_pic_thre
 from utils.pyutils import AverageMeter, cal_eta, format_tabs, setup_logger
 torch.hub.set_dir("./pretrained")
 parser = argparse.ArgumentParser()
@@ -44,7 +44,7 @@ parser.add_argument("--work_dir", default="work_dir_voc_wseg", type=str, help="w
 
 parser.add_argument("--train_set", default="train_aug", type=str, help="training split")
 parser.add_argument("--val_set", default="val", type=str, help="validation split")
-parser.add_argument("--spg", default=1, type=int, help="samples_per_gpu")
+parser.add_argument("--spg", default=2, type=int, help="samples_per_gpu")
 parser.add_argument("--scales", default=(0.5, 2), help="random rescale in training")
 
 parser.add_argument("--optimizer", default='PolyWarmupAdamW', type=str, help="optimizer")
@@ -101,8 +101,9 @@ def setup_seed(seed):
 
 def show_mask(cams_aux,cls_label,low_thre,high_thre):
     import matplotlib.pyplot as plt
-    roi_mask_crop = cam_to_roi_mask2(cams_aux.detach(), cls_label=cls_label, low_thre=low_thre, hig_thre=high_thre)
-    plt.imshow((roi_mask_crop[0]).cpu(), cmap='jet', vmin=-2, vmax=20)
+    # roi_mask_crop = cam_to_roi_mask2(cams_aux.detach(), cls_label=cls_label, low_thre=low_thre, hig_thre=high_thre)
+    
+    plt.imshow(cams_aux.squeeze(0).cpu(), cmap='jet', vmin=-2, vmax=20)
     plt.colorbar()
     plt.title("aux_mask")
     
@@ -224,7 +225,7 @@ def train(args=None):
         aux_layer=args.aux_layer
     )
     CPC_loss = CPCLoss().cuda()
-    trained_state_dict = torch.load('/home/zhonggai/python-work-space/DEFormer/DEFormer/jx_vit_base_p16_224-80ecf9dd.pth', map_location="cpu")
+    trained_state_dict = torch.load('/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/W/baseline/checkpoints/default_model_iter_10000.pth', map_location="cpu")
 
     new_state_dict = OrderedDict()
     if 'model' in trained_state_dict:
@@ -331,31 +332,46 @@ def train(args=None):
         # input_image = TF.to_pil_image(image_origin[0].permute(2,0,1))
         # input_image.save('input_image.png')
         
-    
-        cls, segs, fmap, cls_aux, out_t, out_s,fmap_refined = model(inputs, crops=roi_crops, n_iter=n_iter,select_k = 1,refine_fmap = True)
+# model forward-------------------------------------------------------------------------------------------------------------------------------
 
-        
+        cls, segs, fmap, cls_aux, out_t, out_s,cam_12th = model(inputs, crops=roi_crops, n_iter=n_iter,select_k = 1,return_cam = True)    
+
+# spacial-bce part-------------------------------------------------------------------------------------------------------------------
+
+
+        valid_aux_cam, _ = cam_to_label(cams_aux.detach(), cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=args.bkg_thre, high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index)
+        refined_aux_pesudo_label = refine_cams_with_bkg_v2(par, inputs_denorm, cams=valid_aux_cam, cls_labels=cls_label,  high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index, img_box=img_box, )
+        #pesudo_label [b,h,w]
+        # show_mask(refined_aux_pesudo_label,cls_label,args.low_thre,args.high_thre)       
+        per_pic_thre = get_per_pic_thre(refined_aux_pesudo_label, gd_label=cls_label)
+        spacial_bce_loss = get_spacial_bce_loss(cam_12th, cls_label, per_pic_thre)
+
+    
+    
+# cls-loss-------------------------------------------------------------------------------------------------------------------
         cls_loss = F.multilabel_soft_margin_loss(cls, cls_label)
         cls_loss_aux = F.multilabel_soft_margin_loss(cls_aux, cls_label)
-
-        # cpc_loss = CPC_loss(fmap_refined,cams.detach(),cls_label,args.high_thre,args.low_thre,args.bkg_thre) 
         cpc_loss = torch.tensor(0)
         # ctc_loss crop出来的结果过网络得cls，计算loss
         ctc_loss = CTC_loss(out_s, out_t, flags,cls_label)
-        # ctc_loss = 
-        # seg_loss & reg_loss    cam shape [b 20 448 448]直接插值
-        #后边再仔细看看
-        valid_cam, pseudo_label_test = cam_to_label(cams.detach(), cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=args.bkg_thre, high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index)
+
+        
+        
+        
+#generate pesudo-label and seg------------------------------------------------------------------------------------------------------------------------------------------
+        valid_cam, _ = cam_to_label(cams.detach(), cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=args.bkg_thre, high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index)
         refined_pseudo_label = refine_cams_with_bkg_v2(par, inputs_denorm, cams=valid_cam, cls_labels=cls_label,  high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index, img_box=img_box, )
-        # refined_pseudo_label = pseudo_label_test
         segs = F.interpolate(segs, size=refined_pseudo_label.shape[1:], mode='bilinear', align_corners=False)
         #segs是粗分割lfov的结果 refined_pseudo_label是自己生成的伪标签（cam是最后给出的cam）
 
         seg_loss = get_seg_loss(segs, refined_pseudo_label.type(torch.long), ignore_index=args.ignore_index)
 
-        # reg_loss = get_energy_loss(img=inputs, logit=segs, label=refined_pseudo_label, img_box=img_box, loss_layer=loss_layer)
-
-        # ptc loss   
+        # reg_loss = get_energy_loss(img=inputs, logit=segs, label=refined_pseudo_label, img_box=img_box, loss_layer=loss_layer
+        
+        
+        
+        
+# ptc loss-------------------------------------------------------------------------------------------------------------------------------------
         resized_cams_aux = F.interpolate(cams_aux, size=fmap.shape[2:], mode="bilinear", align_corners=False)
         #根据这个，给出两两patch是否同一类  （2 20 28 28）
         
@@ -365,10 +381,16 @@ def train(args=None):
         ptc_loss = get_masked_ptc_loss(fmap, aff_mask)
         
 
+
+
+
+#train------------------------------------------------------------------------------------------------------------------------
         if n_iter <= 2000:
             loss = 1.0 * cls_loss + 1.0 * cls_loss_aux + args.w_ptc * ptc_loss  + 0.0 * seg_loss 
+        elif n_iter <= 4000:
+            loss = 1.0 * cls_loss + 1.0 * cls_loss_aux + args.w_ptc * ptc_loss + args.w_seg * seg_loss 
         else:
-            loss = 1.0 * cls_loss + 1.0 * cls_loss_aux + args.w_ptc * ptc_loss + 0.0 * seg_loss 
+            loss = 0.5 * spacial_bce_loss + 1.0 * cls_loss_aux + args.w_ptc * ptc_loss + args.w_seg * seg_loss 
 
         # 如果你增加了 cls_loss 的权重值，使其在整体优化中起到更大的作用，那么模型在训练过程中会更加关注优化 cls_loss
         cls_pred = (cls > 0).type(torch.int16)

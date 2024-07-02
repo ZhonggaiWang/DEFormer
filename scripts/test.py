@@ -16,7 +16,7 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 from datasets import voc as voc
-from model.losses import get_masked_ptc_loss, get_seg_loss, CTCLoss_neg, DenseEnergyLoss, get_energy_loss,CPCLoss
+from model.losses import get_masked_ptc_loss, get_seg_loss, CTCLoss_neg, DenseEnergyLoss, get_energy_loss,CPCLoss,get_spacial_bce_loss
 from model.model_seg_neg import network
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
@@ -236,12 +236,7 @@ def train(args=None):
         for k, v in trained_state_dict.items():
             k = k.replace('module.', '')
             new_state_dict[k] = v
-    # new_state_dict.pop("classifier.weight")
-    # new_state_dict.pop("crop_classifier.weight")
 
-    # name_list = ["blocks.0.attn.qkv.bias", "blocks.1.attn.qkv.bias", "blocks.2.attn.qkv.bias", "blocks.3.attn.qkv.bias", "blocks.4.attn.qkv.bias", "blocks.5.attn.qkv.bias", "blocks.6.attn.qkv.bias", "blocks.7.attn.qkv.bias", "blocks.8.attn.qkv.bias", "blocks.9.attn.qkv.bias", "blocks.10.attn.qkv.bias", "blocks.11.attn.qkv.bias"]
-    # for item in name_list:
-    #     new_state_dict.pop(item)
     model.load_state_dict(state_dict=new_state_dict, strict=False)
     if 'CPC_loss' in trained_state_dict:
         CPC_loss = trained_state_dict['CPC_loss']
@@ -328,8 +323,8 @@ def train(args=None):
         local_crops, flags= single_class_crop(images=inputs, cls_label = cls_label,roi_mask=roi_mask, crop_num=ncrops-2, crop_size=args.local_crop_size)
         roi_crops = crops[:2] + local_crops #全局的两张图 + local的多张图
 
-        input_image = TF.to_pil_image(image_origin[0].permute(2,0,1))
-        input_image.save('input_image.png')
+        # input_image = TF.to_pil_image(image_origin[0].permute(2,0,1))
+        # input_image.save('input_image.png')
         
     
         cls, segs, fmap, cls_aux, out_t, out_s,fmap_refined = model(inputs, crops=roi_crops, n_iter=n_iter,select_k = 1,refine_fmap = True)
@@ -368,7 +363,7 @@ def train(args=None):
         if n_iter <= 2000:
             loss = 1.0 * cls_loss + 1.0 * cls_loss_aux + args.w_ptc * ptc_loss  + 0.0 * seg_loss 
         else:
-            loss = 1.0 * cls_loss + 1.0 * cls_loss_aux + args.w_ptc * ptc_loss + 0.0 * seg_loss 
+            loss = 1.0 * cls_loss + 1.0 * cls_loss_aux + args.w_ptc * ptc_loss + args.w_seg * seg_loss 
 
         # 如果你增加了 cls_loss 的权重值，使其在整体优化中起到更大的作用，那么模型在训练过程中会更加关注优化 cls_loss
         cls_pred = (cls > 0).type(torch.int16)

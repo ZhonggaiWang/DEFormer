@@ -1285,3 +1285,21 @@ def cam_to_label_resized(cam, cls_label, img_box=None, bkg_thre=None, high_thre=
         plt.close()
 
     return valid_cam, pseudo_label
+
+def get_per_pic_thre(pesudo_label,gd_label):
+    #pesudo_label [b,h,w]
+    
+    b,h,w = pesudo_label.size()
+    _,c = gd_label.size()
+    flatten_pesudo_label = pesudo_label.view(b,h*w)
+    flatten_pesudo_label[flatten_pesudo_label==255] = 0
+    #elements_list = {}
+    thre_list = []
+    for i in range(b):
+        elements,counts = torch.unique(flatten_pesudo_label[i],dim = -1,return_counts = True)
+        thre = counts / (h*w)
+        temp_thre = torch.zeros(c+1).cuda()
+        temp_thre[elements.tolist()] = thre
+        thre_list.append(temp_thre)
+    per_pic_thre = torch.stack(thre_list)
+    return per_pic_thre

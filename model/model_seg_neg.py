@@ -842,7 +842,7 @@ class network(VisionTransformer):
         embeds[-1] = x
         return x[:, 0], x[:, 1:], embeds[self.aux_layer][:, 1:],embeds
 
-    def forward(self, x, cam_only=False, crops=None, n_iter=None,cam_crop = False,select_k = 1,refine_fmap = False):
+    def forward(self, x, cam_only=False, crops=None, n_iter=None,cam_crop = False,select_k = 1,return_cam = False):
         #x (b c h w) [2 3 448 448]
         cls_token ,_x, x_aux, embeds= self.forward_features(x)
         #cls-token final-patch  mid-patch
@@ -880,8 +880,8 @@ class network(VisionTransformer):
         #分类   
         #B C D -> B C 1
         # multi_cls_pooling =  torch.mean(multi_cls,dim = -1)
-        if refine_fmap:
-            fmap_refine = _x4
+        if return_cam:
+            cam_12th = cam = F.conv2d(_x4, self.classifier.weight)
         
         #B N D
         x_aux_cls = _x_aux.view(_x_aux.shape[0],_x_aux.shape[1],-1).permute(0,2,1)
@@ -905,7 +905,7 @@ class network(VisionTransformer):
         
         if crops is None:
             return cls_x4, seg, _x4, cls_aux
-        elif not refine_fmap:
+        elif not return_cam:
             return cls_x4, seg, _x4, cls_aux, output_t, output_s
         else:
-            return cls_x4, seg, _x4, cls_aux, output_t, output_s,fmap_refine
+            return cls_x4, seg, _x4, cls_aux, output_t, output_s,cam_12th

@@ -12,6 +12,33 @@ from torch.nn.parameter import Parameter
 sys.path.append("./wrapper/bilateralfilter/build/lib.linux-x86_64-3.8")
 # from bilateralfilter import bilateralfilter, bilateralfilter_batch
 
+def get_spacial_bce_loss(cam,label,per_pic_thre):
+    #cam [b,c,h,w] label [b,c] per_pic_thre [b,c+1] cam_flatten [b,c,h*w]
+    b,c,h,w = cam.size()
+    cam_flatten = cam.view(b, c, -1)
+    fg_per_pic_thre = per_pic_thre[:,1:]
+    fg_per_pic_thre_t = torch.round(fg_per_pic_thre *(h*w)).to(int).cuda()
+    spacial_bce_loss = 0
+    for i in range(b):
+        fg_channel = cam_flatten.detach()[i][label[i] == 1]
+        fg_channel_sorted,fg_channel_sorted_index = torch.sort(fg_channel,dim=-1,descending=True)
+        thre_t_idx = fg_per_pic_thre_t[i][label[i] == 1]
+        thre_t = fg_channel_sorted[torch.arange(fg_channel.size()[0]),thre_t_idx]
+        # thre_t_idx = fg_channel_sorted_index[fg_per_pic_thre_t[i][label[i]==1]]
+        # thre_t = 
+        thre_t_dim_class = torch.full((c,), 9999.0).cuda()
+        thre_t_dim_class[label[i]==1] = thre_t
+        # [2,1]->[20]         
+        #    [c,h*w]                        [c,h*w]       [c,1]        
+        generate_label = torch.where((cam_flatten.detach()[i] > thre_t_dim_class.unsqueeze(-1)),torch.tensor(1),torch.tensor(0))
+
+        spacial_bce_loss += F.soft_margin_loss(cam_flatten[i],generate_label)
+    print("spacial_bce_loss:PRINTING IN SPACIAL-BCE BLOCK",spacial_bce_loss/b)
+        
+    return spacial_bce_loss / b
+
+    
+
 def get_masked_ptc_loss(inputs, mask):
 
     b, c, h, w = inputs.shape
@@ -756,3 +783,4 @@ class DenseEnergyLoss(nn.Module):
         return 'sigma_rgb={}, sigma_xy={}, weight={}, scale_factor={}'.format(
             self.sigma_rgb, self.sigma_xy, self.weight, self.scale_factor
         )
+        
