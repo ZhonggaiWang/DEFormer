@@ -32,8 +32,8 @@ def get_spacial_bce_loss(cam,label,per_pic_thre):
         #    [c,h*w]                        [c,h*w]       [c,1]        
         generate_label = torch.where((cam_flatten.detach()[i] > thre_t_dim_class.unsqueeze(-1)),torch.tensor(1),torch.tensor(0))
 
-        spacial_bce_loss += F.soft_margin_loss(cam_flatten[i],generate_label)
-    print("spacial_bce_loss:PRINTING IN SPACIAL-BCE BLOCK",spacial_bce_loss/b)
+        spacial_bce_loss += F.multilabel_soft_margin_loss(cam_flatten[i],generate_label)
+    # print("spacial_bce_loss:PRINTING IN SPACIAL-BCE BLOCK",spacial_bce_loss/b)
         
     return spacial_bce_loss / b
 

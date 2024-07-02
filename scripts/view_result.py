@@ -76,7 +76,7 @@ parser.add_argument("--aux_layer", default=-3, type=int, help="aux_layer")
 parser.add_argument("--seed", default=0, type=int, help="fix random seed")
 parser.add_argument("--save_ckpt",default=True, action="store_true", help="save_ckpt")
 
-parser.add_argument('--local-rank', type=int, default=0)
+parser.add_argument('--local-rank', type=int, default=5)
 parser.add_argument("--num_workers", default=10, type=int, help="num_workers")
 parser.add_argument('--backend', default='nccl')
 
@@ -403,7 +403,8 @@ def train(args=None):
             'cls_loss_aux': cls_loss_aux.item(),
             'seg_loss': seg_loss.item(),
             'cls_score': cls_score.item(),
-            'dcc_loss': cpc_loss.item()
+            'dcc_loss': cpc_loss.item(),
+            'spacial_bce_loss' :spacial_bce_loss.item(),
         })
 
         optim.zero_grad()
@@ -414,15 +415,15 @@ def train(args=None):
         torch.cuda.empty_cache()  # 清理CUDA显存中的垃圾数据
         if n_iter % 100 == 0:
             print('n_iter:',n_iter)
-            print('cls_loss',cls_loss,'\n','cls_loss_aux',cls_loss_aux,'\n','seg_loss',seg_loss,'\n','aur_loss',ctc_loss,'\n','\n','ptc_loss',ptc_loss,'dcc_loss',cpc_loss)
+            print('cls_loss',cls_loss,'\n','cls_loss_aux',cls_loss_aux,'\n','seg_loss',seg_loss,'\n','aur_loss',ctc_loss,'\n','\n','ptc_loss',ptc_loss,'dcc_loss',cpc_loss,'spacial_bce_loss',spacial_bce_loss)
             # print(loss)
-        if (n_iter + 1) % args.log_iters == 0:
+        if (n_iter) % args.log_iters == 0:
 
             delta, eta = cal_eta(time0, n_iter + 1, args.max_iters)
             cur_lr = optim.param_groups[0]['lr']
 
 
-            logging.info("Iter: %d; Elasped: %s; ETA: %s; LR: %.3e; cls_loss: %.4f, cls_loss_aux: %.4f, ptc_loss: %.4f, aur_loss: %.4f, dcc_loss: %.4f..." % (n_iter + 1, delta, eta, cur_lr, avg_meter.pop('cls_loss'), avg_meter.pop('cls_loss_aux'), avg_meter.pop('ptc_loss'), avg_meter.pop('aur_loss'), avg_meter.pop('dcc_loss')))
+            logging.info("Iter: %d; Elasped: %s; ETA: %s; LR: %.3e; cls_loss: %.4f, cls_loss_aux: %.4f, ptc_loss: %.4f, aur_loss: %.4f, dcc_loss: %.4f..., spacial_bce_loss: %.4f..." % (n_iter + 1, delta, eta, cur_lr, avg_meter.pop('cls_loss'), avg_meter.pop('cls_loss_aux'), avg_meter.pop('ptc_loss'), avg_meter.pop('aur_loss'), avg_meter.pop('dcc_loss'),avg_meter.pop('spacial_bce_loss')))
 
         if (n_iter+1) % 2000 == 0:
             # ckpt_name = os.path.join(args.ckpt_dir, "w/oPSA_model_iter_%d.pth" % (n_iter + 1))
