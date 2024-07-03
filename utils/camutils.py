@@ -1292,14 +1292,21 @@ def get_per_pic_thre(pesudo_label,gd_label):
     b,h,w = pesudo_label.size()
     _,c = gd_label.size()
     flatten_pesudo_label = pesudo_label.view(b,h*w)
-    flatten_pesudo_label[flatten_pesudo_label==255] = 0
+    
+
+    
+    flatten_pesudo_label[(flatten_pesudo_label==-2)] = 0    
     #elements_list = {}
     thre_list = []
     for i in range(b):
+        count_uncertain = torch.where(flatten_pesudo_label[i]==-1)
+        count_uncertain = count_uncertain[0].size()[0]
+        flatten_pesudo_label[i][flatten_pesudo_label[i]==-1] = 0        
         elements,counts = torch.unique(flatten_pesudo_label[i],dim = -1,return_counts = True)
         thre = counts / (h*w)
+        thre_uncertain = count_uncertain / (h*w)
         temp_thre = torch.zeros(c+1).cuda()
-        temp_thre[elements.tolist()] = thre
+        temp_thre[elements.tolist()] = torch.minimum(thre + 0.5 * (thre_uncertain/ ((len(elements)-1)+1e-6)),torch.tensor(0.99))
         thre_list.append(temp_thre)
     per_pic_thre = torch.stack(thre_list)
     return per_pic_thre

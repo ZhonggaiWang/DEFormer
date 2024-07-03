@@ -895,7 +895,7 @@ class network(VisionTransformer):
         sorted_x4_cls,_ = torch.sort(x4_cls,-2,descending=True)
         cls_x4 = torch.mean(sorted_x4_cls[:,:5,:],dim=-2).unsqueeze(-1).unsqueeze(-1)
         cls_x4 = self.classifier(cls_x4)
-
+    
 
         cls_x4 = cls_x4.view(-1, self.num_classes-1)
         cls_aux = cls_aux.view(-1, self.num_classes-1)

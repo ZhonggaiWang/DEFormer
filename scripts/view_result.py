@@ -44,7 +44,7 @@ parser.add_argument("--work_dir", default="work_dir_voc_wseg", type=str, help="w
 
 parser.add_argument("--train_set", default="train_aug", type=str, help="training split")
 parser.add_argument("--val_set", default="val", type=str, help="validation split")
-parser.add_argument("--spg", default=2, type=int, help="samples_per_gpu")
+parser.add_argument("--spg", default=1, type=int, help="samples_per_gpu")
 parser.add_argument("--scales", default=(0.5, 2), help="random rescale in training")
 
 parser.add_argument("--optimizer", default='PolyWarmupAdamW', type=str, help="optimizer")
@@ -108,6 +108,17 @@ def show_mask(cams_aux,cls_label,low_thre,high_thre):
     plt.title("aux_mask")
     
     plt.savefig(f'aux_mask.png')
+    plt.close()
+
+def show_mask_cam(cams_aux,cls_label,low_thre,high_thre):
+    import matplotlib.pyplot as plt
+    roi_mask_crop = cam_to_roi_mask2(cams_aux.detach(), cls_label=cls_label, low_thre=low_thre, hig_thre=high_thre)
+    
+    plt.imshow(roi_mask_crop[0].squeeze(0).cpu(), cmap='jet', vmin=-2, vmax=20)
+    plt.colorbar()
+    plt.title("cam_mask")
+    
+    plt.savefig(f'cam_mask.png')
     plt.close()
 
 def validate(model=None, data_loader=None, args=None):
@@ -225,7 +236,7 @@ def train(args=None):
         aux_layer=args.aux_layer
     )
     CPC_loss = CPCLoss().cuda()
-    trained_state_dict = torch.load('/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/W/baseline/checkpoints/default_model_iter_10000.pth', map_location="cpu")
+    trained_state_dict = torch.load('/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/baseline/checkpoints/default_model_iter_10000.pth', map_location="cpu")
 
     new_state_dict = OrderedDict()
     if 'model' in trained_state_dict:
@@ -324,13 +335,10 @@ def train(args=None):
         roi_mask = cam_to_roi_mask2(cams.detach(), cls_label=cls_label, low_thre=args.low_thre, hig_thre=args.high_thre)
         # #b h w
 
-        # show_mask(cams_aux,cls_label,args.low_thre,args.high_thre)
-        
         local_crops, flags= single_class_crop(images=inputs, cls_label = cls_label,roi_mask=roi_mask, crop_num=ncrops-2, crop_size=args.local_crop_size)
         roi_crops = crops[:2] + local_crops #全局的两张图 + local的多张图
 
-        # input_image = TF.to_pil_image(image_origin[0].permute(2,0,1))
-        # input_image.save('input_image.png')
+
         
 # model forward-------------------------------------------------------------------------------------------------------------------------------
 
@@ -340,13 +348,18 @@ def train(args=None):
 
 
         valid_aux_cam, _ = cam_to_label(cams_aux.detach(), cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=args.bkg_thre, high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index)
-        refined_aux_pesudo_label = refine_cams_with_bkg_v2(par, inputs_denorm, cams=valid_aux_cam, cls_labels=cls_label,  high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index, img_box=img_box, )
+        # refined_aux_pesudo_label = refine_cams_with_bkg_v2(par, inputs_denorm, cams=valid_aux_cam, cls_labels=cls_label,  high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index, img_box=img_box, )
         #pesudo_label [b,h,w]
-        # show_mask(refined_aux_pesudo_label,cls_label,args.low_thre,args.high_thre)       
+        refined_aux_pesudo_label = cam_to_roi_mask2(cams_aux.detach(), cls_label=cls_label, low_thre=args.low_thre, hig_thre=args.high_thre)
         per_pic_thre = get_per_pic_thre(refined_aux_pesudo_label, gd_label=cls_label)
         spacial_bce_loss = get_spacial_bce_loss(cam_12th, cls_label, per_pic_thre)
 
     
+#show mask --------------------------------------------------------------------------------------------------------------
+        # show_mask(refined_aux_pesudo_label,cls_label,args.low_thre,args.high_thre)    
+        # show_mask_cam(cams,cls_label,args.low_thre,args.high_thre)
+        # input_image = TF.to_pil_image(image_origin[0].permute(2,0,1))
+        # input_image.save('input_image.png')
     
 # cls-loss-------------------------------------------------------------------------------------------------------------------
         cls_loss = F.multilabel_soft_margin_loss(cls, cls_label)
