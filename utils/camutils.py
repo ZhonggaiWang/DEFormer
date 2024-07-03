@@ -1292,14 +1292,13 @@ def get_per_pic_thre(pesudo_label,gd_label):
     b,h,w = pesudo_label.size()
     _,c = gd_label.size()
     flatten_pesudo_label = pesudo_label.view(b,h*w)
-    
+    flatten_pesudo_label = flatten_pesudo_label + 1
 
-    
-    flatten_pesudo_label[(flatten_pesudo_label==-2)] = 0    
+    # -1 是确定的背景类 0是uncertain  -> 0是bg区域
     #elements_list = {}
     thre_list = []
     for i in range(b):
-        count_uncertain = torch.where(flatten_pesudo_label[i]==-1)
+        count_uncertain = torch.where(flatten_pesudo_label[i]==0)
         count_uncertain = count_uncertain[0].size()[0]
         flatten_pesudo_label[i][flatten_pesudo_label[i]==-1] = 0        
         elements,counts = torch.unique(flatten_pesudo_label[i],dim = -1,return_counts = True)

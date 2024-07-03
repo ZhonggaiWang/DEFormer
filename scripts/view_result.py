@@ -236,7 +236,7 @@ def train(args=None):
         aux_layer=args.aux_layer
     )
     CPC_loss = CPCLoss().cuda()
-    trained_state_dict = torch.load('/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/baseline/checkpoints/default_model_iter_10000.pth', map_location="cpu")
+    trained_state_dict = torch.load('/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/2024-07-03-17-08-07-474923/checkpoints/default_model_iter_1000.pth', map_location="cpu")
 
     new_state_dict = OrderedDict()
     if 'model' in trained_state_dict:
@@ -350,16 +350,17 @@ def train(args=None):
         valid_aux_cam, _ = cam_to_label(cams_aux.detach(), cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=args.bkg_thre, high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index)
         # refined_aux_pesudo_label = refine_cams_with_bkg_v2(par, inputs_denorm, cams=valid_aux_cam, cls_labels=cls_label,  high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index, img_box=img_box, )
         #pesudo_label [b,h,w]
-        refined_aux_pesudo_label = cam_to_roi_mask2(cams_aux.detach(), cls_label=cls_label, low_thre=args.low_thre, hig_thre=args.high_thre)
+        aux_pesedo_show = refined_aux_pesudo_label = cam_to_roi_mask2(cams_aux.detach(), cls_label=cls_label, low_thre=args.low_thre, hig_thre=args.high_thre)
+
         per_pic_thre = get_per_pic_thre(refined_aux_pesudo_label, gd_label=cls_label)
         spacial_bce_loss = get_spacial_bce_loss(cam_12th, cls_label, per_pic_thre)
 
     
 #show mask --------------------------------------------------------------------------------------------------------------
-        # show_mask(refined_aux_pesudo_label,cls_label,args.low_thre,args.high_thre)    
-        # show_mask_cam(cams,cls_label,args.low_thre,args.high_thre)
-        # input_image = TF.to_pil_image(image_origin[0].permute(2,0,1))
-        # input_image.save('input_image.png')
+        show_mask(aux_pesedo_show,cls_label,args.low_thre,args.high_thre)    
+        show_mask_cam(cams,cls_label,args.low_thre,args.high_thre)
+        input_image = TF.to_pil_image(image_origin[0].permute(2,0,1))
+        input_image.save('input_image.png')
     
 # cls-loss-------------------------------------------------------------------------------------------------------------------
         cls_loss = F.multilabel_soft_margin_loss(cls, cls_label)

@@ -16,6 +16,9 @@ def get_spacial_bce_loss(cam,label,per_pic_thre):
     #cam [b,c,h,w] label [b,c] per_pic_thre [b,c+1] cam_flatten [b,c,h*w]
     b,c,h,w = cam.size()
     cam_flatten = cam.view(b, c, -1)
+    
+    
+    
     fg_per_pic_thre = per_pic_thre[:,1:]
     fg_per_pic_thre_t = torch.round(fg_per_pic_thre *(h*w)).to(int).cuda()
     spacial_bce_loss = 0
@@ -30,9 +33,25 @@ def get_spacial_bce_loss(cam,label,per_pic_thre):
         thre_t_dim_class[label[i]==1] = thre_t
         # [2,1]->[20]         
         #    [c,h*w]                        [c,h*w]       [c,1]        
-        generate_label = torch.where((cam_flatten.detach()[i] > thre_t_dim_class.unsqueeze(-1)),torch.tensor(1),torch.tensor(0))
+        generate_label = torch.where((cam_flatten.detach()[i] >= thre_t_dim_class.unsqueeze(-1)),torch.tensor(1),torch.tensor(0))
 
-        spacial_bce_loss += F.multilabel_soft_margin_loss(cam_flatten[i],generate_label)
+
+#focal_loss——————————————————————————————————————————————————————————————————————————————————————————————————————
+        generate_label_class_dim = torch.sum(generate_label,dim=0)
+        negetive_sample = torch.where(generate_label_class_dim == 0)
+        positive_sample = torch.where(generate_label_class_dim > 0)
+        
+        _negetive_sample = negetive_sample[0]
+        _positive_sample = positive_sample[0]
+        
+        spacial_bce_loss_neg = F.multilabel_soft_margin_loss(cam_flatten[i, :, _negetive_sample.tolist()], generate_label[:, _negetive_sample.tolist()])
+        spacial_bce_loss_pos = F.multilabel_soft_margin_loss(cam_flatten[i, :, _positive_sample.tolist()], generate_label[:, _positive_sample.tolist()])
+        
+        spacial_bce_loss += 0.1 *spacial_bce_loss_neg + 0.9 * spacial_bce_loss_pos
+        
+        # print('pos:',spacial_bce_loss_pos,' neg:',spacial_bce_loss_neg)
+#origin loss——————————————————————————————————————————————————————————————————————————————————————————————————————
+        # spacial_bce_loss += F.multilabel_soft_margin_loss(cam_flatten[i],generate_label)
     # print("spacial_bce_loss:PRINTING IN SPACIAL-BCE BLOCK",spacial_bce_loss/b)
         
     return spacial_bce_loss / b
