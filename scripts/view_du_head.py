@@ -18,13 +18,14 @@ import torch.nn.functional as F
 from datasets import voc as voc
 from model.losses import get_masked_ptc_loss, get_seg_loss, CTCLoss_neg, DenseEnergyLoss, get_energy_loss,CPCLoss,get_spacial_bce_loss
 from model.model_seg_neg import network
+from model.double_seg_head import network_du_heads_shared_config,network_du_heads_independent_config
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 from model.PAR import PAR
 from utils import evaluate, imutils, optimizer
-from utils.camutils import single_class_crop,cam_to_label, cam_to_roi_mask2, multi_scale_cam2, label_to_aff_mask, refine_cams_with_bkg_v2, crop_from_roi_neg,cam_patch_contrast_loss,multi_scale_cam_test,crop_from_roi_posi,cam_to_label_resized,get_per_pic_thre
+from utils.camutils import single_class_crop,cam_to_label, cam_to_roi_mask2, multi_scale_cam2, label_to_aff_mask, refine_cams_with_bkg_v2,cam_to_label_resized,get_per_pic_thre,multi_scale_cam2_du_heads
 from utils.pyutils import AverageMeter, cal_eta, format_tabs, setup_logger
 torch.hub.set_dir("./pretrained")
 parser = argparse.ArgumentParser()
@@ -44,7 +45,7 @@ parser.add_argument("--work_dir", default="work_dir_voc_wseg", type=str, help="w
 
 parser.add_argument("--train_set", default="train_aug", type=str, help="training split")
 parser.add_argument("--val_set", default="val", type=str, help="validation split")
-parser.add_argument("--spg", default=6, type=int, help="samples_per_gpu")
+parser.add_argument("--spg", default=3, type=int, help="samples_per_gpu")
 parser.add_argument("--scales", default=(0.5, 2), help="random rescale in training")
 
 parser.add_argument("--optimizer", default='PolyWarmupAdamW', type=str, help="optimizer")
@@ -54,7 +55,7 @@ parser.add_argument("--wt_decay", default=1e-2, type=float, help="weights decay"
 parser.add_argument("--betas", default=(0.9, 0.999), help="betas for Adam")
 parser.add_argument("--power", default=0.9, type=float, help="poweer factor for poly scheduler")
 
-parser.add_argument("--max_iters", default=8000, type=int, help="max training iters")
+parser.add_argument("--max_iters", default=10000, type=int, help="max training iters")
 parser.add_argument("--log_iters", default=200, type=int, help=" logging iters")
 parser.add_argument("--eval_iters", default=2000, type=int, help="validation iters")
 parser.add_argument("--warmup_iters", default=1500, type=int, help="warmup_iters")
@@ -76,13 +77,13 @@ parser.add_argument("--aux_layer", default=-3, type=int, help="aux_layer")
 parser.add_argument("--seed", default=0, type=int, help="fix random seed")
 parser.add_argument("--save_ckpt",default=True, action="store_true", help="save_ckpt")
 
-parser.add_argument('--local-rank', type=int, default=0)
+parser.add_argument('--local-rank', type=int, default=5)
 parser.add_argument("--num_workers", default=10, type=int, help="num_workers")
 parser.add_argument('--backend', default='nccl')
 
-# os.environ['MASTER_ADDR'] = 'localhost'
-# os.environ['MASTER_PORT'] = '5680'
-# os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+os.environ['MASTER_ADDR'] = 'localhost'
+os.environ['MASTER_PORT'] = '5680'
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 # os.environ['CUDA_VISIBLE_DEVICES']='0,1,2,3'
 
 logging.getLogger().setLevel(logging.INFO)
@@ -108,6 +109,17 @@ def show_mask(cams_aux,cls_label,low_thre,high_thre):
     plt.title("aux_mask")
     
     plt.savefig(f'aux_mask.png')
+    plt.close()
+
+def show_mask_cam(cams_aux,cls_label,low_thre,high_thre):
+    import matplotlib.pyplot as plt
+    roi_mask_crop = cam_to_roi_mask2(cams_aux.detach(), cls_label=cls_label, low_thre=low_thre, hig_thre=high_thre)
+    
+    plt.imshow(roi_mask_crop[0].squeeze(0).cpu(), cmap='jet', vmin=-2, vmax=20)
+    plt.colorbar()
+    plt.title("cam_mask")
+    
+    plt.savefig(f'cam_mask.png')
     plt.close()
 
 def validate(model=None, data_loader=None, args=None):
@@ -166,8 +178,8 @@ def validate(model=None, data_loader=None, args=None):
 def train(args=None):
 
     torch.cuda.set_device(args.local_rank)
-    dist.init_process_group(backend=args.backend)
-    # dist.init_process_group(backend='nccl', init_method='env://', rank = 0, world_size = 1)
+    # dist.init_process_group(backend=args.backend)
+    dist.init_process_group(backend='nccl', init_method='env://', rank = 0, world_size = 1)
     logging.info("Total gpus: %d, samples per gpu: %d..."%(dist.get_world_size(), args.spg))
 
     time0 = datetime.datetime.now()
@@ -217,39 +229,40 @@ def train(args=None):
 
     device = torch.device(args.local_rank)
 
-    model = network(
+    model = network_du_heads_shared_config(
         backbone=args.backbone,
         num_classes=args.num_classes,
         pretrained=False,
         init_momentum=args.momentum,
-        aux_layer=args.aux_layer
+        aux_layer=args.aux_layer,
     )
-    CPC_loss = CPCLoss().cuda()
-    trained_state_dict = torch.load('/home/zhonggai/python-work-space/DEFormer/DEFormer/jx_vit_base_p16_224-80ecf9dd.pth', map_location="cpu")
+    
+#pretrained_load——————————————————————————————————————————————————————————————————————————————————————————————————
+    # CPC_loss = CPCLoss().cuda()
+    # trained_state_dict = torch.load('/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/baseline/checkpoints/default_model_iter_10000.pth', map_location="cpu")
+    # new_state_dict = OrderedDict()
+    
+    # if 'model' in trained_state_dict:
+    #     model_state_dict = trained_state_dict['model']
+    #     for k, v in model_state_dict.items():
+    #         k = k.replace('module.', '')
+    #         new_state_dict[k] = v
+    # else:
+    #     for k, v in trained_state_dict.items():
+    #         k = k.replace('module.', '')
+    #         new_state_dict[k] = v
 
-    new_state_dict = OrderedDict()
-    if 'model' in trained_state_dict:
-        model_state_dict = trained_state_dict['model']
-        for k, v in model_state_dict.items():
-            k = k.replace('module.', '')
-            new_state_dict[k] = v
-    else:
-        for k, v in trained_state_dict.items():
-            k = k.replace('module.', '')
-            new_state_dict[k] = v
-    # new_state_dict.pop("classifier.weight")
-    # new_state_dict.pop("crop_classifier.weight")
+    # model.load_state_dict(state_dict=new_state_dict, strict=False)
+    # # if 'CPC_loss' in trained_state_dict:
+    # #     CPC_loss = trained_state_dict['CPC_loss']
 
-    # name_list = ["blocks.0.attn.qkv.bias", "blocks.1.attn.qkv.bias", "blocks.2.attn.qkv.bias", "blocks.3.attn.qkv.bias", "blocks.4.attn.qkv.bias", "blocks.5.attn.qkv.bias", "blocks.6.attn.qkv.bias", "blocks.7.attn.qkv.bias", "blocks.8.attn.qkv.bias", "blocks.9.attn.qkv.bias", "blocks.10.attn.qkv.bias", "blocks.11.attn.qkv.bias"]
-    # for item in name_list:
-    #     new_state_dict.pop(item)
-    model.load_state_dict(state_dict=new_state_dict, strict=False)
-    if 'CPC_loss' in trained_state_dict:
-        CPC_loss = trained_state_dict['CPC_loss']
 
+
+
+#add param ——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
     param_groups = model.get_param_groups()
-    ccf_param = CPC_loss.get_param_groups()
-    param_groups[2].append(ccf_param)
+    # ccf_param = CPC_loss.get_param_groups()
+    # param_groups[2].append(ccf_param)
     model.to(device)
 
     # cfg.optimizer.learning_rate *= 2
@@ -284,6 +297,9 @@ def train(args=None):
         warmup_ratio=args.warmup_lr,
         power=args.power)
 
+
+
+
     logging.info('\nOptimizer: \n%s' % optim)
     model = DistributedDataParallel(model, device_ids=[args.local_rank], find_unused_parameters=True)
 
@@ -292,7 +308,7 @@ def train(args=None):
     avg_meter = AverageMeter()
 
 
-    loss_layer = DenseEnergyLoss(weight=1e-7, sigma_rgb=15, sigma_xy=100, scale_factor=0.5)
+    # loss_layer = DenseEnergyLoss(weight=1e-7, sigma_rgb=15, sigma_xy=100, scale_factor=0.5)
     ncrops = 10
     CTC_loss = CTCLoss_neg(ncrops=ncrops, temp=args.temp).cuda()
     
@@ -318,86 +334,119 @@ def train(args=None):
         cls_label = cls_label.to(device, non_blocking=True)
 
         # get local crops from uncertain regions   multi scale cam 方法，返回的是一个multi scale混合的cam
-        cams, cams_aux = multi_scale_cam2(model, inputs=inputs, scales=args.cam_scales) #448
-
+        b1_cams, b1_cams_aux = multi_scale_cam2_du_heads(model, branch = 'b1', inputs=inputs, scales=args.cam_scales) #448
+        b2_cams, b2_cams_aux = multi_scale_cam2_du_heads(model, branch='b2', inputs=inputs, scales=args.cam_scales)
+        
         #改动cam_aux
-        roi_mask = cam_to_roi_mask2(cams.detach(), cls_label=cls_label, low_thre=args.low_thre, hig_thre=args.high_thre)
-        # #b h w
+        # b1_roi_mask = cam_to_roi_mask2(b1_cams.detach(), cls_label=cls_label, low_thre=args.low_thre, hig_thre=args.high_thre)
+        # b2_roi_mask = cam_to_roi_mask2(b2_cams.detach(), cls_label=cls_label, low_thre=args.low_thre, hig_thre=args.high_thre)
+        # # #b h w
 
-        local_crops, flags= single_class_crop(images=inputs, cls_label = cls_label,roi_mask=roi_mask, crop_num=ncrops-2, crop_size=args.local_crop_size)
-        roi_crops = crops[:2] + local_crops #全局的两张图 + local的多张图
+        # local_crops, flags= single_class_crop(images=inputs, cls_label = cls_label,roi_mask=roi_mask, crop_num=ncrops-2, crop_size=args.local_crop_size)
+        # roi_crops = crops[:2] + local_crops #全局的两张图 + local的多张图
 
 
         
 # model forward-------------------------------------------------------------------------------------------------------------------------------
 
-        cls, segs, fmap, cls_aux, out_t, out_s,cam_12th = model(inputs, crops=roi_crops, n_iter=n_iter,select_k = 1,return_cam = True)    
+        cls, segs, fmap, cls_aux, cam_12th = model(inputs, crops='#', n_iter=n_iter,select_k = 1,return_cam = True)    
+        b1_cls, b2_cls = cls[0], cls[1]
+        b1_segs, b2_segs = segs[0], segs[1]
+        b1_fmap, b2_fmap = fmap[0], fmap[1]
+        b1_cls_aux, b2_cls_aux = cls_aux[0], cls_aux[1]
+        b1_cam_12th, b2_cam_12th = cam_12th[0], cam_12th[1]
+        
 
-# spacial-bce part-------------------------------------------------------------------------------------------------------------------
+
+# branch2 : spacial-bce + cls loss part-------------------------------------------------------------------------------------------------------------------
 
 
-        valid_aux_cam, _ = cam_to_label(cams_aux.detach(), cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=args.bkg_thre, high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index)
+        # valid_aux_cam, _ = cam_to_label(cams_aux.detach(), cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=args.bkg_thre, high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index)
         # refined_aux_pesudo_label = refine_cams_with_bkg_v2(par, inputs_denorm, cams=valid_aux_cam, cls_labels=cls_label,  high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index, img_box=img_box, )
         #pesudo_label [b,h,w]
-        refined_aux_pesudo_label = cam_to_roi_mask2(cams_aux.detach(), cls_label=cls_label, low_thre=args.low_thre, hig_thre=args.high_thre)
-        per_pic_thre = get_per_pic_thre(refined_aux_pesudo_label, gd_label=cls_label)
-        spacial_bce_loss = get_spacial_bce_loss(cam_12th, cls_label, per_pic_thre)
+        aux_pesedo_show = b2_refined_aux_pesudo_label = cam_to_roi_mask2(b2_cams_aux.detach(), cls_label=cls_label, low_thre=args.low_thre, hig_thre=args.high_thre)
+        per_pic_thre = get_per_pic_thre(b2_refined_aux_pesudo_label, gd_label=cls_label)
+        b2_spacial_bce_loss = get_spacial_bce_loss(b2_cam_12th, cls_label, per_pic_thre)
+        b2_cls_loss = F.multilabel_soft_margin_loss(b2_cls, cls_label)
+        b2_cls_loss_aux = F.multilabel_soft_margin_loss(b2_cls_aux, cls_label)
+
 
     
 #show mask --------------------------------------------------------------------------------------------------------------
-        # show_mask(refined_aux_pesudo_label,cls_label,args.low_thre,args.high_thre)    
-        # show_mask_cam(cams,cls_label,args.low_thre,args.high_thre)
-        # input_image = TF.to_pil_image(image_origin[0].permute(2,0,1))
-        # input_image.save('input_image.png')
-    
-# cls-loss-------------------------------------------------------------------------------------------------------------------
-        cls_loss = F.multilabel_soft_margin_loss(cls, cls_label)
-        cls_loss_aux = F.multilabel_soft_margin_loss(cls_aux, cls_label)
+        from PIL import Image, ImageOps
+        show_mask(aux_pesedo_show,cls_label,args.low_thre,args.high_thre)    
+        show_mask_cam(b1_cams,cls_label,args.low_thre,args.high_thre)
+        input_image = TF.to_pil_image(image_origin[0].permute(2,0,1))
+        input_image.save('input_image.png')
+
+        
+# branch1 : cls-loss-------------------------------------------------------------------------------------------------------------------
+        b1_cls_loss = F.multilabel_soft_margin_loss(b1_cls, cls_label)
+        b1_cls_loss_aux = F.multilabel_soft_margin_loss(b1_cls_aux, cls_label)
+        
+       
+        
+        
+#——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
         cpc_loss = torch.tensor(0)
-        # ctc_loss crop出来的结果过网络得cls，计算loss
-        #ctc_loss = CTC_loss(out_s, out_t, flags,cls_label)
         ctc_loss = torch.tensor(0)
+        # ctc_loss crop出来的结果过网络得cls，计算loss
+        # ctc_loss = CTC_loss(out_s, out_t, flags,cls_label)
 
         
         
         
-#generate pesudo-label and seg------------------------------------------------------------------------------------------------------------------------------------------
-        valid_cam, _ = cam_to_label(cams.detach(), cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=args.bkg_thre, high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index)
-        refined_pseudo_label = refine_cams_with_bkg_v2(par, inputs_denorm, cams=valid_cam, cls_labels=cls_label,  high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index, img_box=img_box, )
-        segs = F.interpolate(segs, size=refined_pseudo_label.shape[1:], mode='bilinear', align_corners=False)
+#b1 b2 generate pesudo-label and seg------------------------------------------------------------------------------------------------------------------------------------------
+        b1_valid_cam, _ = cam_to_label(b1_cams.detach(), cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=args.bkg_thre, high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index)
+        b1_refined_pseudo_label = refine_cams_with_bkg_v2(par, inputs_denorm, cams=b1_valid_cam, cls_labels=cls_label,  high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index, img_box=img_box, )
+        b2_segs = F.interpolate(b2_segs, size=b1_refined_pseudo_label.shape[1:], mode='bilinear', align_corners=False)
         #segs是粗分割lfov的结果 refined_pseudo_label是自己生成的伪标签（cam是最后给出的cam）
-
-        seg_loss = get_seg_loss(segs, refined_pseudo_label.type(torch.long), ignore_index=args.ignore_index)
-
-        # reg_loss = get_energy_loss(img=inputs, logit=segs, label=refined_pseudo_label, img_box=img_box, loss_layer=loss_layer
+        b2_seg_loss = get_seg_loss(b2_segs, b1_refined_pseudo_label.type(torch.long), ignore_index=args.ignore_index)
+        #cross head
+        
+        b2_valid_cam, _ = cam_to_label(b2_cams.detach(), cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=args.bkg_thre, high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index)
+        b2_refined_pseudo_label = refine_cams_with_bkg_v2(par, inputs_denorm, cams=b2_valid_cam, cls_labels=cls_label,  high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index, img_box=img_box, )
+        b1_segs = F.interpolate(b1_segs, size=b2_refined_pseudo_label.shape[1:], mode='bilinear', align_corners=False)
+        #segs是粗分割lfov的结果 refined_pseudo_label是自己生成的伪标签（cam是最后给出的cam）
+        b1_seg_loss = get_seg_loss(b1_segs, b2_refined_pseudo_label.type(torch.long), ignore_index=args.ignore_index)
+        
+        seg_loss = b1_seg_loss + b2_seg_loss
         
         
         
-        
-# ptc loss-------------------------------------------------------------------------------------------------------------------------------------
-        resized_cams_aux = F.interpolate(cams_aux, size=fmap.shape[2:], mode="bilinear", align_corners=False)
+#b1 b2 ptc loss-------------------------------------------------------------------------------------------------------------------------------------
+        b1_resized_cams_aux = F.interpolate(b1_cams_aux, size=b1_fmap.shape[2:], mode="bilinear", align_corners=False)
         #根据这个，给出两两patch是否同一类  （2 20 28 28）
-        
-        _, pseudo_label_aux = cam_to_label_resized(resized_cams_aux.detach(), cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=args.bkg_thre, high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index,printornot=False,clip = False)
+        _,b1_pseudo_label_aux = cam_to_label_resized(b1_resized_cams_aux.detach(), cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=args.bkg_thre, high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index,printornot=False,clip = False)
         #伪标签是2 20 28 28，这个用于分出pair
-        aff_mask = label_to_aff_mask(pseudo_label_aux)
-        ptc_loss = get_masked_ptc_loss(fmap, aff_mask)
+        b1_aff_mask = label_to_aff_mask(b1_pseudo_label_aux)
+        b1_ptc_loss = get_masked_ptc_loss(b1_fmap, b1_aff_mask)
         
+        b2_resized_cams_aux = F.interpolate(b2_cams_aux, size=b2_fmap.shape[2:], mode="bilinear", align_corners=False)
+        #根据这个，给出两两patch是否同一类  （2 20 28 28）
+        _,b2_pseudo_label_aux = cam_to_label_resized(b2_resized_cams_aux.detach(), cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=args.bkg_thre, high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index,printornot=False,clip = False)
+        #伪标签是2 20 28 28，这个用于分出pair
+        b2_aff_mask = label_to_aff_mask(b2_pseudo_label_aux)
+        b2_ptc_loss = get_masked_ptc_loss(b2_fmap, b2_aff_mask)
 
-
+        ptc_loss = b2_ptc_loss + b1_ptc_loss
 
 
 #train------------------------------------------------------------------------------------------------------------------------
         if n_iter <= 2000:
-            loss = 1.0 * cls_loss + 1.0 * cls_loss_aux + args.w_ptc * ptc_loss  + 0.0 * seg_loss 
+            loss = 1.0 * (b1_cls_loss + b2_cls_loss) + 1.0 * (b1_cls_loss_aux + b2_cls_loss_aux) + args.w_ptc * ptc_loss  + 0.0 * seg_loss 
         elif n_iter <= 4000:
-            loss = 1.0 * cls_loss + 1.0 * cls_loss_aux + args.w_ptc * ptc_loss + args.w_seg * seg_loss 
+            loss = 1.0 *  (b1_cls_loss + b2_cls_loss) + 1.0 * (b1_cls_loss_aux + b2_cls_loss_aux) + args.w_ptc * ptc_loss + args.w_seg * seg_loss 
         else:
-            loss = 0.8 * spacial_bce_loss + 0.2 * cls_loss +  1.0 * cls_loss_aux + args.w_ptc * ptc_loss + args.w_seg * seg_loss 
+            loss = 1.0 * b2_spacial_bce_loss + 1.0 * b1_cls_loss_aux + args.w_ptc * ptc_loss + args.w_seg * seg_loss 
 
         # 如果你增加了 cls_loss 的权重值，使其在整体优化中起到更大的作用，那么模型在训练过程中会更加关注优化 cls_loss
         cls_pred = (cls > 0).type(torch.int16)
         cls_score = evaluate.multilabel_score(cls_label.cpu().numpy()[0], cls_pred.cpu().numpy()[0])
+
+        cls_loss = (b1_cls_loss + b2_cls_loss)/2
+        cls_loss_aux = (b1_cls_loss_aux + b2_cls_loss_aux) / 2
+        spacial_bce_loss = b2_spacial_bce_loss
 
         avg_meter.add({
             'cls_loss': cls_loss.item(),
@@ -416,35 +465,42 @@ def train(args=None):
         # torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optim.step()
         torch.cuda.empty_cache()  # 清理CUDA显存中的垃圾数据
-        if n_iter % 100 == 0:
-            print('n_iter:',n_iter)
-            print('cls_loss',cls_loss,'\n','cls_loss_aux',cls_loss_aux,'\n','seg_loss',seg_loss,'\n','aur_loss',ctc_loss,'\n','\n','ptc_loss',ptc_loss,'dcc_loss',cpc_loss,'spacial_bce_loss',spacial_bce_loss)
-            # print(loss)
+        # if n_iter % 100 == 0:
+        #     print('n_iter:',n_iter)
+        #     print('cls_loss',cls_loss,'\n','cls_loss_aux',cls_loss_aux,'\n','seg_loss',seg_loss,'\n','aur_loss',ctc_loss,'\n','\n','ptc_loss',ptc_loss,'dcc_loss',cpc_loss,'spacial_bce_loss',spacial_bce_loss)
+        #     # print(loss)
         if (n_iter) % args.log_iters == 0:
 
             delta, eta = cal_eta(time0, n_iter + 1, args.max_iters)
             cur_lr = optim.param_groups[0]['lr']
 
 
-            logging.info("Iter: %d; Elasped: %s; ETA: %s; LR: %.3e; cls_loss: %.4f, cls_loss_aux: %.4f, ptc_loss: %.4f, aur_loss: %.4f, dcc_loss: %.4f..., spacial_bce_loss: %.4f..." % (n_iter, delta, eta, cur_lr, avg_meter.pop('cls_loss'), avg_meter.pop('cls_loss_aux'), avg_meter.pop('ptc_loss'), avg_meter.pop('aur_loss'), avg_meter.pop('dcc_loss'),avg_meter.pop('spacial_bce_loss')))
+            logging.info("Iter: %d; Elasped: %s; ETA: %s; LR: %.3e; cls_loss: %.4f, cls_loss_aux: %.4f, ptc_loss: %.4f, aur_loss: %.4f, dcc_loss: %.4f..., spacial_bce_loss: %.4f..." % (n_iter + 1, delta, eta, cur_lr, avg_meter.pop('cls_loss'), avg_meter.pop('cls_loss_aux'), avg_meter.pop('ptc_loss'), avg_meter.pop('aur_loss'), avg_meter.pop('dcc_loss'),avg_meter.pop('spacial_bce_loss')))
 
         if (n_iter+1) % 2000 == 0:
             # ckpt_name = os.path.join(args.ckpt_dir, "w/oPSA_model_iter_%d.pth" % (n_iter + 1))
-            if args.local_rank ==0:
-                logging.info('Validating...')
-                    # if args.save_ckpt:
-                    #     torch.save(model.state_dict(), ckpt_name)
-                val_cls_score, tab_results = validate(model=model, data_loader=val_loader, args=args)
 
-                logging.info("val cls score: %.6f" % (val_cls_score))
-                logging.info("\n"+tab_results)
-        if (n_iter + 1) % 2000 == 0:
+            logging.info('Validating...branch1')
+                # if args.save_ckpt:
+                #     torch.save(model.state_dict(), ckpt_name)
+            val_cls_score, tab_results = validate(model=model.eval_branch('b1'), data_loader=val_loader, args=args)
+            logging.info("val cls score: %.6f" % (val_cls_score))
+            logging.info("\n"+tab_results)
+            
+            logging.info('Validating...branch2')
+                # if args.save_ckpt:
+                #     torch.save(model.state_dict(), ckpt_name)
+            val_cls_score, tab_results = validate(model=model.eval_branch('b2'), data_loader=val_loader, args=args)
+            logging.info("val cls score: %.6f" % (val_cls_score))
+            logging.info("\n"+tab_results)
+            
+            
+        if (n_iter + 1) % 10000 == 0:
             if args.local_rank ==0:
                 if args.save_ckpt:
                     print('saving checkpoint')
                     state_dict = {
                         'model': model.state_dict(),
-                        'CPC_loss': CPC_loss
                     }
                     ckpt_name = os.path.join(args.ckpt_dir, "default_model_iter_%d.pth" % (n_iter + 1))
                     torch.save(state_dict, ckpt_name)
@@ -463,7 +519,7 @@ if __name__ == "__main__":
     args.ckpt_dir = os.path.join(args.work_dir, "checkpoints")
     args.pred_dir = os.path.join(args.work_dir, "predictions")
 
-    if args.local_rank ==0:
+    if args.local_rank ==10:
         os.makedirs(args.ckpt_dir, exist_ok=True)
         os.makedirs(args.pred_dir, exist_ok=True)
 

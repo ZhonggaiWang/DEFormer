@@ -18,6 +18,7 @@ import torch.nn.functional as F
 from datasets import voc as voc
 from model.losses import get_masked_ptc_loss, get_seg_loss, CTCLoss_neg, DenseEnergyLoss, get_energy_loss,CPCLoss,get_spacial_bce_loss
 from model.model_seg_neg import network
+from model.double_seg_head import network_du_heads_independent_config
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
@@ -236,7 +237,7 @@ def train(args=None):
         aux_layer=args.aux_layer
     )
     CPC_loss = CPCLoss().cuda()
-    trained_state_dict = torch.load('/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/2024-07-03-17-08-07-474923/checkpoints/default_model_iter_1000.pth', map_location="cpu")
+    trained_state_dict = torch.load('/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/2024-07-04-17-42-16-624009/checkpoints/default_model_iter_8000.pth', map_location="cpu")
 
     new_state_dict = OrderedDict()
     if 'model' in trained_state_dict:
@@ -357,11 +358,13 @@ def train(args=None):
 
     
 #show mask --------------------------------------------------------------------------------------------------------------
+        from PIL import Image, ImageOps
         show_mask(aux_pesedo_show,cls_label,args.low_thre,args.high_thre)    
         show_mask_cam(cams,cls_label,args.low_thre,args.high_thre)
         input_image = TF.to_pil_image(image_origin[0].permute(2,0,1))
         input_image.save('input_image.png')
-    
+
+        
 # cls-loss-------------------------------------------------------------------------------------------------------------------
         cls_loss = F.multilabel_soft_margin_loss(cls, cls_label)
         cls_loss_aux = F.multilabel_soft_margin_loss(cls_aux, cls_label)
