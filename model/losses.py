@@ -47,7 +47,7 @@ def get_spacial_bce_loss(cam,label,per_pic_thre):
         spacial_bce_loss_neg = F.multilabel_soft_margin_loss(cam_flatten[i, :, _negetive_sample.tolist()], generate_label[:, _negetive_sample.tolist()])
         spacial_bce_loss_pos = F.multilabel_soft_margin_loss(cam_flatten[i, :, _positive_sample.tolist()], generate_label[:, _positive_sample.tolist()])
         
-        spacial_bce_loss += 0.1 *spacial_bce_loss_neg + 0.9 * spacial_bce_loss_pos
+        spacial_bce_loss += 0.1 * spacial_bce_loss_neg + 0.9 * spacial_bce_loss_pos
         
         # print('pos:',spacial_bce_loss_pos,' neg:',spacial_bce_loss_neg)
 #origin loss——————————————————————————————————————————————————————————————————————————————————————————————————————

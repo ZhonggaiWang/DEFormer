@@ -706,7 +706,7 @@ def get_pertrained_dict(pretrain_path):
 
 class network_du_heads_independent_config(nn.Module):
     def __init__(self, backbone, num_classes=None, pretrained=None, init_momentum=None, aux_layer=None, pretrained_path= None):
-        super(network_du_heads_shared_config, self).__init__()
+        super(network_du_heads_independent_config, self).__init__()
 
         self.branch1 = network(backbone, num_classes, pretrained, init_momentum, aux_layer)
         self.branch2 = network(backbone, num_classes, pretrained, init_momentum, aux_layer)
@@ -725,7 +725,11 @@ class network_du_heads_independent_config(nn.Module):
         param_groups = [b1_param_groups[0]+b2_param_groups[0],b1_param_groups[1]+b2_param_groups[1],b1_param_groups[2]+b2_param_groups[2],b1_param_groups[3]+b2_param_groups[3]]
         return param_groups
         
-    
+    def eval_branch(self,branch):
+        if branch == 'b1':
+            return self.branch1
+        else:
+            return self.branch2
 
     def forward(self, x, cam_only=False, crops=None, n_iter=None,cam_crop = False,select_k = 1,return_cam = False):
         if cam_only == True:

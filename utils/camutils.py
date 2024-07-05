@@ -985,6 +985,65 @@ def multi_scale_cam2(model, inputs, scales):
     return cam, cam_aux
 
 
+def multi_scale_cam2_du_heads(model, branch,inputs, scales):
+    '''process cam and aux-cam'''
+    # cam_list, tscam_list = [], []
+    if branch == 'b1':
+        branch = 0
+    elif branch == 'b2':
+        branch = 1
+    else:
+        AssertionError('Invalid branch')
+    
+    b, c, h, w = inputs.shape #（batch channel h w） inputs:原图
+    with torch.no_grad():
+        inputs_cat = torch.cat([inputs, inputs.flip(-1)], dim=0)
+        #dim = 0 ，batch维度上拼接
+        _cam_aux, _cam = model(inputs_cat, cam_only=True)
+        _cam_aux, _cam = _cam_aux[branch], _cam[branch]
+        _cam = F.interpolate(_cam, size=(h,w), mode='bilinear', align_corners=False)
+        #直接上采样  aug
+        _cam = torch.max(_cam[:b,...], _cam[b:,...].flip(-1))
+        _cam_aux = F.interpolate(_cam_aux, size=(h,w), mode='bilinear', align_corners=False)
+        _cam_aux = torch.max(_cam_aux[:b,...], _cam_aux[b:,...].flip(-1))
+        #选取同一个像素上的较大值
+
+        cam_list = [F.relu(_cam)]
+        cam_aux_list = [F.relu(_cam_aux)]
+
+        #缩放操作
+        for s in scales:
+            if s != 1.0:  #原图缩放
+                _inputs = F.interpolate(inputs, size=(int(s*h), int(s*w)), mode='bilinear', align_corners=False)
+                inputs_cat = torch.cat([_inputs, _inputs.flip(-1)], dim=0)
+
+                _cam_aux, _cam = model(inputs_cat, cam_only=True)
+                _cam_aux, _cam = _cam_aux[branch], _cam[branch]
+
+                _cam = F.interpolate(_cam, size=(h,w), mode='bilinear', align_corners=False)
+                _cam = torch.max(_cam[:b,...], _cam[b:,...].flip(-1))
+                _cam_aux = F.interpolate(_cam_aux, size=(h,w), mode='bilinear', align_corners=False)
+                _cam_aux = torch.max(_cam_aux[:b,...], _cam_aux[b:,...].flip(-1))
+                #b c h w
+                cam_list.append(F.relu(_cam))
+                cam_aux_list.append(F.relu(_cam_aux))
+        #torch.stack(cam_list, dim=0) 将 cam_list 中的 CAM 张量在新的维度 dim=0 上进行堆叠。
+        # 这将创建一个形状为 (num_cams, b, c, h, w) 的新张量，
+        # 其中 num_cams 是 CAM 的数量，b 是批量大小，c 是通道数，h 和 w 是 CAM 的高度和宽度。
+        #作用是混合同一张图的不同scales的不同cam
+        cam = torch.sum(torch.stack(cam_list, dim=0), dim=0)
+
+        cam = cam + F.adaptive_max_pool2d(-cam, (1, 1)) #保证cam最小值为0
+        cam /= F.adaptive_max_pool2d(cam, (1, 1)) + 1e-5 #归一化
+
+        cam_aux = torch.sum(torch.stack(cam_aux_list, dim=0), dim=0)
+        cam_aux = cam_aux + F.adaptive_max_pool2d(-cam_aux, (1, 1))
+        cam_aux /= F.adaptive_max_pool2d(cam_aux, (1, 1)) + 1e-5
+
+    return cam, cam_aux
+
+
+
 def multi_scale_cam_grad(model, inputs, scales):
     '''process cam and aux-cam'''
     # cam_list, tscam_list = [], []
@@ -1305,7 +1364,7 @@ def get_per_pic_thre(pesudo_label,gd_label):
         thre = counts / (h*w)
         thre_uncertain = count_uncertain / (h*w)
         temp_thre = torch.zeros(c+1).cuda()
-        temp_thre[elements.tolist()] = torch.minimum(thre + 0.5 * (thre_uncertain/ ((len(elements)-1)+1e-6)),torch.tensor(0.99))
+        temp_thre[elements.tolist()] = torch.minimum(thre + 0.2 * (thre_uncertain/ ((len(elements)-1)+1e-6)),torch.tensor(0.99))
         thre_list.append(temp_thre)
     per_pic_thre = torch.stack(thre_list)
     return per_pic_thre

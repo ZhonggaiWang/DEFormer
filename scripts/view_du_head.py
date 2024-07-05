@@ -45,7 +45,7 @@ parser.add_argument("--work_dir", default="work_dir_voc_wseg", type=str, help="w
 
 parser.add_argument("--train_set", default="train_aug", type=str, help="training split")
 parser.add_argument("--val_set", default="val", type=str, help="validation split")
-parser.add_argument("--spg", default=3, type=int, help="samples_per_gpu")
+parser.add_argument("--spg", default=1, type=int, help="samples_per_gpu")
 parser.add_argument("--scales", default=(0.5, 2), help="random rescale in training")
 
 parser.add_argument("--optimizer", default='PolyWarmupAdamW', type=str, help="optimizer")
@@ -67,7 +67,7 @@ parser.add_argument("--cam_scales", default=(1.0, 0.5, 1.5), help="multi_scales 
 
 parser.add_argument("--w_ptc", default=0.2, type=float, help="w_ptc")
 parser.add_argument("--w_ctc", default=0.45, type=float, help="w_ctc")
-parser.add_argument("--w_seg", default=0.1, type=float, help="w_seg")
+parser.add_argument("--w_seg", default=0.25, type=float, help="w_seg")
 parser.add_argument("--w_reg", default=0.05, type=float, help="w_reg")
 
 parser.add_argument("--temp", default=0.5, type=float, help="temp")
@@ -111,7 +111,7 @@ def show_mask(cams_aux,cls_label,low_thre,high_thre):
     plt.savefig(f'aux_mask.png')
     plt.close()
 
-def show_mask_cam(cams_aux,cls_label,low_thre,high_thre):
+def show_mask_cam(cams_aux,cls_label,low_thre,high_thre, branch_name):
     import matplotlib.pyplot as plt
     roi_mask_crop = cam_to_roi_mask2(cams_aux.detach(), cls_label=cls_label, low_thre=low_thre, hig_thre=high_thre)
     
@@ -119,7 +119,7 @@ def show_mask_cam(cams_aux,cls_label,low_thre,high_thre):
     plt.colorbar()
     plt.title("cam_mask")
     
-    plt.savefig(f'cam_mask.png')
+    plt.savefig(f'cam_mask' + branch_name + '.png')
     plt.close()
 
 def validate(model=None, data_loader=None, args=None):
@@ -229,7 +229,7 @@ def train(args=None):
 
     device = torch.device(args.local_rank)
 
-    model = network_du_heads_shared_config(
+    model = network_du_heads_independent_config(
         backbone=args.backbone,
         num_classes=args.num_classes,
         pretrained=False,
@@ -239,20 +239,20 @@ def train(args=None):
     
 #pretrained_load——————————————————————————————————————————————————————————————————————————————————————————————————
     # CPC_loss = CPCLoss().cuda()
-    # trained_state_dict = torch.load('/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/baseline/checkpoints/default_model_iter_10000.pth', map_location="cpu")
-    # new_state_dict = OrderedDict()
+    trained_state_dict = torch.load('/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/independent-config/checkpoints/default_model_iter_10000.pth', map_location="cpu")
+    new_state_dict = OrderedDict()
     
-    # if 'model' in trained_state_dict:
-    #     model_state_dict = trained_state_dict['model']
-    #     for k, v in model_state_dict.items():
-    #         k = k.replace('module.', '')
-    #         new_state_dict[k] = v
-    # else:
-    #     for k, v in trained_state_dict.items():
-    #         k = k.replace('module.', '')
-    #         new_state_dict[k] = v
+    if 'model' in trained_state_dict:
+        model_state_dict = trained_state_dict['model']
+        for k, v in model_state_dict.items():
+            k = k.replace('module.', '')
+            new_state_dict[k] = v
+    else:
+        for k, v in trained_state_dict.items():
+            k = k.replace('module.', '')
+            new_state_dict[k] = v
 
-    # model.load_state_dict(state_dict=new_state_dict, strict=False)
+    model.load_state_dict(state_dict=new_state_dict, strict=True)
     # # if 'CPC_loss' in trained_state_dict:
     # #     CPC_loss = trained_state_dict['CPC_loss']
 
@@ -375,7 +375,9 @@ def train(args=None):
 #show mask --------------------------------------------------------------------------------------------------------------
         from PIL import Image, ImageOps
         show_mask(aux_pesedo_show,cls_label,args.low_thre,args.high_thre)    
-        show_mask_cam(b1_cams,cls_label,args.low_thre,args.high_thre)
+        show_mask_cam(b1_cams,cls_label,args.low_thre,args.high_thre, 'b1')
+        show_mask_cam(b2_cams,cls_label,args.low_thre,args.high_thre, 'b2')
+        show_mask_cam(b1_cams_aux,cls_label,args.low_thre,args.high_thre, 'b1_cam_aux')
         input_image = TF.to_pil_image(image_origin[0].permute(2,0,1))
         input_image.save('input_image.png')
 
@@ -435,13 +437,13 @@ def train(args=None):
 #train------------------------------------------------------------------------------------------------------------------------
         if n_iter <= 2000:
             loss = 1.0 * (b1_cls_loss + b2_cls_loss) + 1.0 * (b1_cls_loss_aux + b2_cls_loss_aux) + args.w_ptc * ptc_loss  + 0.0 * seg_loss 
-        elif n_iter <= 4000:
+        elif n_iter <= 3000:
             loss = 1.0 *  (b1_cls_loss + b2_cls_loss) + 1.0 * (b1_cls_loss_aux + b2_cls_loss_aux) + args.w_ptc * ptc_loss + args.w_seg * seg_loss 
         else:
             loss = 1.0 * b2_spacial_bce_loss + 1.0 * b1_cls_loss_aux + args.w_ptc * ptc_loss + args.w_seg * seg_loss 
 
         # 如果你增加了 cls_loss 的权重值，使其在整体优化中起到更大的作用，那么模型在训练过程中会更加关注优化 cls_loss
-        cls_pred = (cls > 0).type(torch.int16)
+        cls_pred = (b1_cls > 0).type(torch.int16)
         cls_score = evaluate.multilabel_score(cls_label.cpu().numpy()[0], cls_pred.cpu().numpy()[0])
 
         cls_loss = (b1_cls_loss + b2_cls_loss)/2

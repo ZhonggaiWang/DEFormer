@@ -45,7 +45,7 @@ parser.add_argument("--work_dir", default="work_dir_voc_wseg", type=str, help="w
 
 parser.add_argument("--train_set", default="train_aug", type=str, help="training split")
 parser.add_argument("--val_set", default="val", type=str, help="validation split")
-parser.add_argument("--spg", default=3, type=int, help="samples_per_gpu")
+parser.add_argument("--spg", default=4, type=int, help="samples_per_gpu")
 parser.add_argument("--scales", default=(0.5, 2), help="random rescale in training")
 
 parser.add_argument("--optimizer", default='PolyWarmupAdamW', type=str, help="optimizer")
@@ -55,7 +55,7 @@ parser.add_argument("--wt_decay", default=1e-2, type=float, help="weights decay"
 parser.add_argument("--betas", default=(0.9, 0.999), help="betas for Adam")
 parser.add_argument("--power", default=0.9, type=float, help="poweer factor for poly scheduler")
 
-parser.add_argument("--max_iters", default=10000, type=int, help="max training iters")
+parser.add_argument("--max_iters", default=8000, type=int, help="max training iters")
 parser.add_argument("--log_iters", default=200, type=int, help=" logging iters")
 parser.add_argument("--eval_iters", default=2000, type=int, help="validation iters")
 parser.add_argument("--warmup_iters", default=1500, type=int, help="warmup_iters")
@@ -67,7 +67,7 @@ parser.add_argument("--cam_scales", default=(1.0, 0.5, 1.5), help="multi_scales 
 
 parser.add_argument("--w_ptc", default=0.2, type=float, help="w_ptc")
 parser.add_argument("--w_ctc", default=0.45, type=float, help="w_ctc")
-parser.add_argument("--w_seg", default=0.1, type=float, help="w_seg")
+parser.add_argument("--w_seg", default=0.2, type=float, help="w_seg")
 parser.add_argument("--w_reg", default=0.05, type=float, help="w_reg")
 
 parser.add_argument("--temp", default=0.5, type=float, help="temp")
@@ -77,7 +77,7 @@ parser.add_argument("--aux_layer", default=-3, type=int, help="aux_layer")
 parser.add_argument("--seed", default=0, type=int, help="fix random seed")
 parser.add_argument("--save_ckpt",default=True, action="store_true", help="save_ckpt")
 
-parser.add_argument('--local-rank', type=int, default=5)
+parser.add_argument('--local-rank', type=int, default=0)
 parser.add_argument("--num_workers", default=10, type=int, help="num_workers")
 parser.add_argument('--backend', default='nccl')
 
@@ -229,7 +229,7 @@ def train(args=None):
 
     device = torch.device(args.local_rank)
 
-    model = network_du_heads_shared_config(
+    model = network_du_heads_independent_config(
         backbone=args.backbone,
         num_classes=args.num_classes,
         pretrained=False,
@@ -384,7 +384,8 @@ def train(args=None):
         b1_cls_loss = F.multilabel_soft_margin_loss(b1_cls, cls_label)
         b1_cls_loss_aux = F.multilabel_soft_margin_loss(b1_cls_aux, cls_label)
         
-       
+
+        
         
         
 #——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
@@ -394,7 +395,8 @@ def train(args=None):
         # ctc_loss = CTC_loss(out_s, out_t, flags,cls_label)
 
         
-        
+
+
         
 #b1 b2 generate pesudo-label and seg------------------------------------------------------------------------------------------------------------------------------------------
         b1_valid_cam, _ = cam_to_label(b1_cams.detach(), cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=args.bkg_thre, high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index)
@@ -435,10 +437,10 @@ def train(args=None):
 #train------------------------------------------------------------------------------------------------------------------------
         if n_iter <= 2000:
             loss = 1.0 * (b1_cls_loss + b2_cls_loss) + 1.0 * (b1_cls_loss_aux + b2_cls_loss_aux) + args.w_ptc * ptc_loss  + 0.0 * seg_loss 
-        elif n_iter <= 4000:
+        elif n_iter <= 3000:
             loss = 1.0 *  (b1_cls_loss + b2_cls_loss) + 1.0 * (b1_cls_loss_aux + b2_cls_loss_aux) + args.w_ptc * ptc_loss + args.w_seg * seg_loss 
         else:
-            loss = 1.0 * b2_spacial_bce_loss + 1.0 * b1_cls_loss_aux + args.w_ptc * ptc_loss + args.w_seg * seg_loss 
+            loss = (0.5 * b2_spacial_bce_loss + 0.5 * b2_cls_loss) + 1.0 * b1_cls_loss+ 1.0 * (b1_cls_loss_aux + b2_cls_loss_aux) + args.w_ptc * ptc_loss + args.w_seg * seg_loss 
 
         # 如果你增加了 cls_loss 的权重值，使其在整体优化中起到更大的作用，那么模型在训练过程中会更加关注优化 cls_loss
         cls_pred = (b1_cls > 0).type(torch.int16)
@@ -469,33 +471,33 @@ def train(args=None):
         #     print('n_iter:',n_iter)
         #     print('cls_loss',cls_loss,'\n','cls_loss_aux',cls_loss_aux,'\n','seg_loss',seg_loss,'\n','aur_loss',ctc_loss,'\n','\n','ptc_loss',ptc_loss,'dcc_loss',cpc_loss,'spacial_bce_loss',spacial_bce_loss)
         #     # print(loss)
-        if (n_iter) % args.log_iters == 0:
+        if (n_iter + 1) % args.log_iters == 0:
+            if args.local_rank ==0:
+                delta, eta = cal_eta(time0, n_iter + 1, args.max_iters)
+                cur_lr = optim.param_groups[0]['lr']
 
-            delta, eta = cal_eta(time0, n_iter + 1, args.max_iters)
-            cur_lr = optim.param_groups[0]['lr']
 
+                logging.info("Iter: %d; Elasped: %s; ETA: %s; LR: %.3e; cls_loss: %.4f, cls_loss_aux: %.4f, ptc_loss: %.4f, aur_loss: %.4f, dcc_loss: %.4f..., spacial_bce_loss: %.4f..." % (n_iter + 1, delta, eta, cur_lr, avg_meter.pop('cls_loss'), avg_meter.pop('cls_loss_aux'), avg_meter.pop('ptc_loss'), avg_meter.pop('aur_loss'), avg_meter.pop('dcc_loss'),avg_meter.pop('spacial_bce_loss')))
 
-            logging.info("Iter: %d; Elasped: %s; ETA: %s; LR: %.3e; cls_loss: %.4f, cls_loss_aux: %.4f, ptc_loss: %.4f, aur_loss: %.4f, dcc_loss: %.4f..., spacial_bce_loss: %.4f..." % (n_iter + 1, delta, eta, cur_lr, avg_meter.pop('cls_loss'), avg_meter.pop('cls_loss_aux'), avg_meter.pop('ptc_loss'), avg_meter.pop('aur_loss'), avg_meter.pop('dcc_loss'),avg_meter.pop('spacial_bce_loss')))
-
-        if (n_iter+1) % 2000 == 0:
+        if (n_iter + 1) % 2000 == 0:
             # ckpt_name = os.path.join(args.ckpt_dir, "w/oPSA_model_iter_%d.pth" % (n_iter + 1))
-
-            logging.info('Validating...branch1')
-                # if args.save_ckpt:
-                #     torch.save(model.state_dict(), ckpt_name)
-            val_cls_score, tab_results = validate(model=model.eval_branch('b1'), data_loader=val_loader, args=args)
-            logging.info("val cls score: %.6f" % (val_cls_score))
-            logging.info("\n"+tab_results)
+            if args.local_rank ==0:
+                logging.info('Validating...branch1')
+                    # if args.save_ckpt:
+                    #     torch.save(model.state_dict(), ckpt_name)
+                val_cls_score, tab_results = validate(model=model.module.eval_branch('b1'), data_loader=val_loader, args=args)
+                logging.info("val cls score: %.6f" % (val_cls_score))
+                logging.info("\n"+tab_results)
+                
+                logging.info('Validating...branch2')
+                    # if args.save_ckpt:
+                    #     torch.save(model.state_dict(), ckpt_name)
+                val_cls_score, tab_results = validate(model=model.module.eval_branch('b2'), data_loader=val_loader, args=args)
+                logging.info("val cls score: %.6f" % (val_cls_score))
+                logging.info("\n"+tab_results)
             
-            logging.info('Validating...branch2')
-                # if args.save_ckpt:
-                #     torch.save(model.state_dict(), ckpt_name)
-            val_cls_score, tab_results = validate(model=model.eval_branch('b2'), data_loader=val_loader, args=args)
-            logging.info("val cls score: %.6f" % (val_cls_score))
-            logging.info("\n"+tab_results)
             
-            
-        if (n_iter + 1) % 10000 == 0:
+        if (n_iter + 1) % 2000 == 0:
             if args.local_rank ==0:
                 if args.save_ckpt:
                     print('saving checkpoint')
