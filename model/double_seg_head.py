@@ -687,7 +687,7 @@ class network(VisionTransformer):
         elif not return_cam:
             return cls_x4, seg, _x4, cls_aux, 
         else:
-            return cls_x4, seg, _x4, cls_aux, cam_12th
+            return cls_x4, seg, _x4, cls_aux, cam_12th, cls_token,
 
 def get_pertrained_dict(pretrain_path):
     trained_state_dict = torch.load(pretrain_path)
@@ -747,9 +747,9 @@ class network_du_heads_independent_config(nn.Module):
                 b2_cls_x4, b2_seg, b2_x4, b2_cls_aux = self.branch2.forward(x, cam_only, crops, n_iter, cam_crop, select_k, return_cam)            
                 return (b1_cls_x4,b2_cls_x4),(b1_seg,b2_seg), (b1_x4, b2_x4), (b1_cls_aux, b2_cls_aux)
             else:
-                b1_cls_x4, b1_seg, b1_x4, b1_cls_aux, b1_cam12th = self.branch1.forward(x, cam_only, crops, n_iter, cam_crop, select_k, return_cam)
-                b2_cls_x4, b2_seg, b2_x4, b2_cls_aux, b2_cam12th = self.branch2.forward(x, cam_only, crops, n_iter, cam_crop, select_k, return_cam)  
-                return (b1_cls_x4,b2_cls_x4),(b1_seg,b2_seg), (b1_x4, b2_x4), (b1_cls_aux, b2_cls_aux), (b1_cam12th, b2_cam12th) 
+                b1_cls_x4, b1_seg, b1_x4, b1_cls_aux, b1_cam12th, b1_cls_token = self.branch1.forward(x, cam_only, crops, n_iter, cam_crop, select_k, return_cam)
+                b2_cls_x4, b2_seg, b2_x4, b2_cls_aux, b2_cam12th, b2_cls_token = self.branch2.forward(x, cam_only, crops, n_iter, cam_crop, select_k, return_cam)  
+                return (b1_cls_x4,b2_cls_x4),(b1_seg,b2_seg), (b1_x4, b2_x4), (b1_cls_aux, b2_cls_aux), (b1_cam12th, b2_cam12th) , (b1_cls_token, b2_cls_token),
             
 
 

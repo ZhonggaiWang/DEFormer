@@ -33,7 +33,7 @@ def get_spacial_bce_loss(cam,label,per_pic_thre):
         thre_t_dim_class[label[i]==1] = thre_t
         # [2,1]->[20]         
         #    [c,h*w]                        [c,h*w]       [c,1]        
-        generate_label = torch.where((cam_flatten.detach()[i] >= thre_t_dim_class.unsqueeze(-1)),torch.tensor(1),torch.tensor(0))
+        generate_label = torch.where((cam_flatten.detach()[i] >= thre_t_dim_class.unsqueeze(-1)),torch.tensor(1).cuda(),torch.tensor(0).cuda())
 
 
 #focal_loss——————————————————————————————————————————————————————————————————————————————————————————————————————

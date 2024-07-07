@@ -67,8 +67,9 @@ parser.add_argument("--cam_scales", default=(1.0, 0.5, 1.5), help="multi_scales 
 
 parser.add_argument("--w_ptc", default=0.2, type=float, help="w_ptc")
 parser.add_argument("--w_ctc", default=0.45, type=float, help="w_ctc")
-parser.add_argument("--w_seg", default=0.2, type=float, help="w_seg")
+parser.add_argument("--w_seg", default=0.1, type=float, help="w_seg")
 parser.add_argument("--w_reg", default=0.05, type=float, help="w_reg")
+parser.add_argument("--uncertain_region_thre", default=0.2 , type=float, help="uncertain_region_thre")
 
 parser.add_argument("--temp", default=0.5, type=float, help="temp")
 parser.add_argument("--momentum", default=0.9, type=float, help="temp")
@@ -77,7 +78,7 @@ parser.add_argument("--aux_layer", default=-3, type=int, help="aux_layer")
 parser.add_argument("--seed", default=0, type=int, help="fix random seed")
 parser.add_argument("--save_ckpt",default=True, action="store_true", help="save_ckpt")
 
-parser.add_argument('--local-rank', type=int, default=0)
+parser.add_argument("--local_rank", type=int, default=0)
 parser.add_argument("--num_workers", default=10, type=int, help="num_workers")
 parser.add_argument('--backend', default='nccl')
 
@@ -270,12 +271,12 @@ def train(args=None):
         params=[
             {
                 "params": param_groups[0],
-                "lr": args.lr,
+                "lr": args.lr * 2,
                 "weight_decay": args.wt_decay,
             },
             {
                 "params": param_groups[1],
-                "lr": args.lr,
+                "lr": args.lr * 2,
                 "weight_decay": args.wt_decay,
             },
             {
@@ -349,14 +350,29 @@ def train(args=None):
         
 # model forward-------------------------------------------------------------------------------------------------------------------------------
 
-        cls, segs, fmap, cls_aux, cam_12th = model(inputs, crops='#', n_iter=n_iter,select_k = 1,return_cam = True)    
+        cls, segs, fmap, cls_aux, cam_12th, cls_token = model(inputs, crops='#', n_iter=n_iter,select_k = 1,return_cam = True)    
         b1_cls, b2_cls = cls[0], cls[1]
         b1_segs, b2_segs = segs[0], segs[1]
         b1_fmap, b2_fmap = fmap[0], fmap[1]
         b1_cls_aux, b2_cls_aux = cls_aux[0], cls_aux[1]
         b1_cam_12th, b2_cam_12th = cam_12th[0], cam_12th[1]
+        b1_cls_token, b2_cls_token = cls_token[0], cls_token[1]        
         
+# discrepancy loss ----------------------------------------------------------------
 
+        # fmap_1_flat = b1_fmap.view(b1_fmap.shape[0], b1_fmap.shape[1], -1)
+        # fmap_2_flat = b2_fmap.view(b2_fmap.shape[0], b2_fmap.shape[1], -1)
+
+        # cross_network_cos_simi = torch.nn.CosineSimilarity(dim=-1, eps=1e-6)
+        # b1_sim_loss = 1 + torch.abs(cross_network_cos_simi(fmap_1_flat.detach(), fmap_2_flat).mean())
+        # b2_sim_loss = 1 + torch.abs(cross_network_cos_simi(fmap_2_flat.detach(), fmap_1_flat).mean())
+
+        cross_network_cos_simi = torch.nn.CosineSimilarity(dim=-1, eps=1e-6)
+        b1_sim_loss = 1 - torch.abs(cross_network_cos_simi(b1_cls_token.detach(), b2_cls_token).mean())
+        b2_sim_loss = 1 - torch.abs(cross_network_cos_simi(b2_cls_token.detach(), b1_cls_token).mean())
+        
+        network_sim_loss = b1_sim_loss + b2_sim_loss
+        # network_sim_loss = torch.tensor(0)
 
 # branch2 : spacial-bce + cls loss part-------------------------------------------------------------------------------------------------------------------
 
@@ -365,7 +381,7 @@ def train(args=None):
         # refined_aux_pesudo_label = refine_cams_with_bkg_v2(par, inputs_denorm, cams=valid_aux_cam, cls_labels=cls_label,  high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index, img_box=img_box, )
         #pesudo_label [b,h,w]
         aux_pesedo_show = b2_refined_aux_pesudo_label = cam_to_roi_mask2(b2_cams_aux.detach(), cls_label=cls_label, low_thre=args.low_thre, hig_thre=args.high_thre)
-        per_pic_thre = get_per_pic_thre(b2_refined_aux_pesudo_label, gd_label=cls_label)
+        per_pic_thre = get_per_pic_thre(b2_refined_aux_pesudo_label, gd_label=cls_label, uncertain_region_thre = args.uncertain_region_thre)
         b2_spacial_bce_loss = get_spacial_bce_loss(b2_cam_12th, cls_label, per_pic_thre)
         b2_cls_loss = F.multilabel_soft_margin_loss(b2_cls, cls_label)
         b2_cls_loss_aux = F.multilabel_soft_margin_loss(b2_cls_aux, cls_label)
@@ -399,6 +415,7 @@ def train(args=None):
 
         
 #b1 b2 generate pesudo-label and seg------------------------------------------------------------------------------------------------------------------------------------------
+        # b1_mix_cam = 0.7 * b1_cams.detach() + 0.3 * b2_cams.detach()
         b1_valid_cam, _ = cam_to_label(b1_cams.detach(), cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=args.bkg_thre, high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index)
         b1_refined_pseudo_label = refine_cams_with_bkg_v2(par, inputs_denorm, cams=b1_valid_cam, cls_labels=cls_label,  high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index, img_box=img_box, )
         b2_segs = F.interpolate(b2_segs, size=b1_refined_pseudo_label.shape[1:], mode='bilinear', align_corners=False)
@@ -406,6 +423,7 @@ def train(args=None):
         b2_seg_loss = get_seg_loss(b2_segs, b1_refined_pseudo_label.type(torch.long), ignore_index=args.ignore_index)
         #cross head
         
+        # b2_mix_cam = 0.7 * b2_cams.detach() + 0.3 * b1_cams.detach()
         b2_valid_cam, _ = cam_to_label(b2_cams.detach(), cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=args.bkg_thre, high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index)
         b2_refined_pseudo_label = refine_cams_with_bkg_v2(par, inputs_denorm, cams=b2_valid_cam, cls_labels=cls_label,  high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index, img_box=img_box, )
         b1_segs = F.interpolate(b1_segs, size=b2_refined_pseudo_label.shape[1:], mode='bilinear', align_corners=False)
@@ -436,11 +454,11 @@ def train(args=None):
 
 #train------------------------------------------------------------------------------------------------------------------------
         if n_iter <= 2000:
-            loss = 1.0 * (b1_cls_loss + b2_cls_loss) + 1.0 * (b1_cls_loss_aux + b2_cls_loss_aux) + args.w_ptc * ptc_loss  + 0.0 * seg_loss 
-        elif n_iter <= 3000:
-            loss = 1.0 *  (b1_cls_loss + b2_cls_loss) + 1.0 * (b1_cls_loss_aux + b2_cls_loss_aux) + args.w_ptc * ptc_loss + args.w_seg * seg_loss 
+            loss = 1.0 * (b1_cls_loss + b2_cls_loss) + 1.0 * (b1_cls_loss_aux + b2_cls_loss_aux) + args.w_ptc * ptc_loss  + 0.0 * seg_loss + 0.1 * network_sim_loss
+        elif n_iter <= 3500:
+            loss = 1.0 *  (b1_cls_loss + b2_cls_loss) + 1.0 * (b1_cls_loss_aux + b2_cls_loss_aux) + args.w_ptc * ptc_loss + args.w_seg * seg_loss + 0.1 * network_sim_loss
         else:
-            loss = (0.5 * b2_spacial_bce_loss + 0.5 * b2_cls_loss) + 1.0 * b1_cls_loss+ 1.0 * (b1_cls_loss_aux + b2_cls_loss_aux) + args.w_ptc * ptc_loss + args.w_seg * seg_loss 
+            loss = (0.5 * b2_spacial_bce_loss + 0.5 * b2_cls_loss) + 1.0 * b1_cls_loss+ 1.0 * (b1_cls_loss_aux + b2_cls_loss_aux) + args.w_ptc * ptc_loss + args.w_seg * seg_loss + 0.1 * network_sim_loss
 
         # 如果你增加了 cls_loss 的权重值，使其在整体优化中起到更大的作用，那么模型在训练过程中会更加关注优化 cls_loss
         cls_pred = (b1_cls > 0).type(torch.int16)
@@ -459,6 +477,7 @@ def train(args=None):
             'cls_score': cls_score.item(),
             'dcc_loss': cpc_loss.item(),
             'spacial_bce_loss' :spacial_bce_loss.item(),
+            'network_sim_loss': network_sim_loss.item(),
         })
 
         optim.zero_grad()
@@ -477,7 +496,7 @@ def train(args=None):
                 cur_lr = optim.param_groups[0]['lr']
 
 
-                logging.info("Iter: %d; Elasped: %s; ETA: %s; LR: %.3e; cls_loss: %.4f, cls_loss_aux: %.4f, ptc_loss: %.4f, aur_loss: %.4f, dcc_loss: %.4f..., spacial_bce_loss: %.4f..." % (n_iter + 1, delta, eta, cur_lr, avg_meter.pop('cls_loss'), avg_meter.pop('cls_loss_aux'), avg_meter.pop('ptc_loss'), avg_meter.pop('aur_loss'), avg_meter.pop('dcc_loss'),avg_meter.pop('spacial_bce_loss')))
+                logging.info("Iter: %d; Elasped: %s; ETA: %s; LR: %.3e; cls_loss: %.4f, cls_loss_aux: %.4f, ptc_loss: %.4f, aur_loss: %.4f, dcc_loss: %.4f..., spacial_bce_loss: %.4f...,network_sim_loss: %.4f... " % (n_iter + 1, delta, eta, cur_lr, avg_meter.pop('cls_loss'), avg_meter.pop('cls_loss_aux'), avg_meter.pop('ptc_loss'), avg_meter.pop('aur_loss'), avg_meter.pop('dcc_loss'),avg_meter.pop('spacial_bce_loss'),avg_meter.pop('network_sim_loss')))
 
         if (n_iter + 1) % 2000 == 0:
             # ckpt_name = os.path.join(args.ckpt_dir, "w/oPSA_model_iter_%d.pth" % (n_iter + 1))
@@ -488,7 +507,7 @@ def train(args=None):
                 val_cls_score, tab_results = validate(model=model.module.eval_branch('b1'), data_loader=val_loader, args=args)
                 logging.info("val cls score: %.6f" % (val_cls_score))
                 logging.info("\n"+tab_results)
-                
+            
                 logging.info('Validating...branch2')
                     # if args.save_ckpt:
                     #     torch.save(model.state_dict(), ckpt_name)

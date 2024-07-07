@@ -69,6 +69,7 @@ parser.add_argument("--w_ptc", default=0.2, type=float, help="w_ptc")
 parser.add_argument("--w_ctc", default=0.45, type=float, help="w_ctc")
 parser.add_argument("--w_seg", default=0.25, type=float, help="w_seg")
 parser.add_argument("--w_reg", default=0.05, type=float, help="w_reg")
+parser.add_argument("--uncertain_region_thre", default=0.2 , type=float, help="uncertain_region_thre")
 
 parser.add_argument("--temp", default=0.5, type=float, help="temp")
 parser.add_argument("--momentum", default=0.9, type=float, help="temp")
@@ -100,15 +101,21 @@ def setup_seed(seed):
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
 
-def show_mask(cams_aux,cls_label,low_thre,high_thre):
+def show_seg(cam,cls_label,low_thre,high_thre,seg_name):
     import matplotlib.pyplot as plt
     # roi_mask_crop = cam_to_roi_mask2(cams_aux.detach(), cls_label=cls_label, low_thre=low_thre, hig_thre=high_thre)
-    
-    plt.imshow(cams_aux.squeeze(0).cpu(), cmap='jet', vmin=-2, vmax=20)
+    b, c, h, w = cam.shape
+    #pseudo_label = torch.zeros((b,h,w))
+    # cls_label_rep = cls_label.unsqueeze(-1).unsqueeze(-1).repeat([1,1,h,w])
+    valid_cam = cam #cls_label_rep * 
+    cam_value, _pseudo_label = valid_cam.max(dim=1, keepdim=False)
+    _pseudo_label = _pseudo_label-1
+    _pseudo_label[_pseudo_label == -1] = -2
+    plt.imshow(_pseudo_label.squeeze(0).cpu(), cmap='jet', vmin=-2, vmax=20)
     plt.colorbar()
-    plt.title("aux_mask")
+    plt.title("seg" + seg_name)
     
-    plt.savefig(f'aux_mask.png')
+    plt.savefig(f'seg' + seg_name + 'png')
     plt.close()
 
 def show_mask_cam(cams_aux,cls_label,low_thre,high_thre, branch_name):
@@ -117,9 +124,9 @@ def show_mask_cam(cams_aux,cls_label,low_thre,high_thre, branch_name):
     
     plt.imshow(roi_mask_crop[0].squeeze(0).cpu(), cmap='jet', vmin=-2, vmax=20)
     plt.colorbar()
-    plt.title("cam_mask")
+    plt.title(branch_name + "_mask")
     
-    plt.savefig(f'cam_mask' + branch_name + '.png')
+    plt.savefig(f'mask' + branch_name + '.png')
     plt.close()
 
 def validate(model=None, data_loader=None, args=None):
@@ -239,7 +246,7 @@ def train(args=None):
     
 #pretrained_load——————————————————————————————————————————————————————————————————————————————————————————————————
     # CPC_loss = CPCLoss().cuda()
-    trained_state_dict = torch.load('/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/independent-config/checkpoints/default_model_iter_10000.pth', map_location="cpu")
+    trained_state_dict = torch.load('/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/du_head_spacial_bce/checkpoints/default_model_iter_8000.pth', map_location="cpu")
     new_state_dict = OrderedDict()
     
     if 'model' in trained_state_dict:
@@ -349,13 +356,28 @@ def train(args=None):
         
 # model forward-------------------------------------------------------------------------------------------------------------------------------
 
-        cls, segs, fmap, cls_aux, cam_12th = model(inputs, crops='#', n_iter=n_iter,select_k = 1,return_cam = True)    
+        cls, segs, fmap, cls_aux, cam_12th, cls_token = model(inputs, crops='#', n_iter=n_iter,select_k = 1,return_cam = True)    
         b1_cls, b2_cls = cls[0], cls[1]
         b1_segs, b2_segs = segs[0], segs[1]
         b1_fmap, b2_fmap = fmap[0], fmap[1]
         b1_cls_aux, b2_cls_aux = cls_aux[0], cls_aux[1]
         b1_cam_12th, b2_cam_12th = cam_12th[0], cam_12th[1]
+        b1_cls_token, b2_cls_token = cls_token[0], cls_token[1]
         
+#————————————————————————
+        fmap_1_flat = b1_fmap.view(b1_fmap.shape[0], b1_fmap.shape[1], -1)
+        fmap_2_flat = b2_fmap.view(b2_fmap.shape[0], b2_fmap.shape[1], -1)
+
+        # cross_network_cos_simi = torch.nn.CosineSimilarity(dim=-1, eps=1e-6)
+        # b1_sim_loss = 1 + torch.abs(cross_network_cos_simi(fmap_1_flat.detach(), fmap_2_flat).mean())
+        # b2_sim_loss = 1 + torch.abs(cross_network_cos_simi(fmap_2_flat.detach(), fmap_1_flat).mean())
+        cross_network_cos_simi = torch.nn.CosineSimilarity(dim=-1, eps=1e-6)
+        b1_sim_loss = 1 - torch.abs(cross_network_cos_simi(b1_cls_token.detach(), b2_cls_token).mean())
+        b2_sim_loss = 1 - torch.abs(cross_network_cos_simi(b2_cls_token.detach(), b1_cls_token).mean())
+
+        network_sim_loss = b1_sim_loss + b2_sim_loss
+
+
 
 
 # branch2 : spacial-bce + cls loss part-------------------------------------------------------------------------------------------------------------------
@@ -365,21 +387,13 @@ def train(args=None):
         # refined_aux_pesudo_label = refine_cams_with_bkg_v2(par, inputs_denorm, cams=valid_aux_cam, cls_labels=cls_label,  high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index, img_box=img_box, )
         #pesudo_label [b,h,w]
         aux_pesedo_show = b2_refined_aux_pesudo_label = cam_to_roi_mask2(b2_cams_aux.detach(), cls_label=cls_label, low_thre=args.low_thre, hig_thre=args.high_thre)
-        per_pic_thre = get_per_pic_thre(b2_refined_aux_pesudo_label, gd_label=cls_label)
+        per_pic_thre = get_per_pic_thre(b2_refined_aux_pesudo_label, gd_label=cls_label, uncertain_region_thre = args.uncertain_region_thre)
         b2_spacial_bce_loss = get_spacial_bce_loss(b2_cam_12th, cls_label, per_pic_thre)
         b2_cls_loss = F.multilabel_soft_margin_loss(b2_cls, cls_label)
         b2_cls_loss_aux = F.multilabel_soft_margin_loss(b2_cls_aux, cls_label)
 
 
-    
-#show mask --------------------------------------------------------------------------------------------------------------
-        from PIL import Image, ImageOps
-        show_mask(aux_pesedo_show,cls_label,args.low_thre,args.high_thre)    
-        show_mask_cam(b1_cams,cls_label,args.low_thre,args.high_thre, 'b1')
-        show_mask_cam(b2_cams,cls_label,args.low_thre,args.high_thre, 'b2')
-        show_mask_cam(b1_cams_aux,cls_label,args.low_thre,args.high_thre, 'b1_cam_aux')
-        input_image = TF.to_pil_image(image_origin[0].permute(2,0,1))
-        input_image.save('input_image.png')
+
 
         
 # branch1 : cls-loss-------------------------------------------------------------------------------------------------------------------
@@ -414,6 +428,17 @@ def train(args=None):
         
         seg_loss = b1_seg_loss + b2_seg_loss
         
+#show mask --------------------------------------------------------------------------------------------------------------
+        from PIL import Image, ImageOps
+        show_mask_cam(b1_cams,cls_label,args.low_thre,args.high_thre, 'b1_cam')
+        show_mask_cam(b2_cams,cls_label,args.low_thre,args.high_thre, 'b2_cam')
+        show_mask_cam(b1_cams_aux,cls_label,args.low_thre,args.high_thre, 'b1_cam_aux')
+        show_mask_cam(b2_cams_aux,cls_label,args.low_thre,args.high_thre, 'b2_cam_aux')
+        input_image = TF.to_pil_image(image_origin[0].permute(2,0,1))
+        input_image.save('input_image.png')
+        show_seg(b1_segs,cls_label,args.low_thre,args.high_thre, 'b1_seg')
+        show_seg(b2_segs,cls_label,args.low_thre,args.high_thre, 'b2_seg')        
+
         
         
 #b1 b2 ptc loss-------------------------------------------------------------------------------------------------------------------------------------

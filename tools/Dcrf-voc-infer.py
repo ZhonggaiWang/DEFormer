@@ -12,7 +12,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from datasets import voc
-from model.model_seg_neg import network
+from model.double_seg_head import network_du_heads_independent_config
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from utils import evaluate, imutils
@@ -23,7 +23,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--infer_set", default="val", type=str, help="infer_set")
 parser.add_argument("--pooling", default="gmp", type=str, help="pooling method")
 # parser.add_argument("--model_path", default="workdir_voc_final2/2022-11-04-01-50-48-441426/checkpoints/model_iter_20000.pth", type=str, help="model_path")
-parser.add_argument("--model_path", default="/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/2024-07-07-02-05-36-877550/checkpoints/default_model_iter_6000.pth", type=str, help="model_path")
+parser.add_argument("--model_path", default="/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/du_head_spacial_bce/checkpoints/default_model_iter_8000.pth", type=str, help="model_path")
 
 parser.add_argument("--backbone", default='vit_base_patch16_224', type=str, help="vit_base_patch16_224")
 parser.add_argument("--data_folder", default='../VOC2012', type=str, help="dataset folder")
@@ -158,7 +158,7 @@ def validate(args=None):
                             pin_memory=False,
                             drop_last=False)
 
-    model = network(
+    model = network_du_heads_independent_config(
         backbone=args.backbone,
         num_classes=args.num_classes,
         pretrained=False,
@@ -182,7 +182,7 @@ def validate(args=None):
     model.load_state_dict(state_dict=new_state_dict, strict=True)
     model.eval()
 
-    seg_score = _validate(model=model.module.eval_branch('b2'), data_loader=val_loader, args=args)
+    seg_score = _validate(model=model.eval_branch('b2'), data_loader=val_loader, args=args)
     torch.cuda.empty_cache()
 
     crf_score = crf_proc()
