@@ -514,6 +514,36 @@ def cam_to_roi_mask2(cam, cls_label, hig_thre=None, low_thre=None):
     
     return roi_mask
 
+def cam_to_roi_mask2(cam, cls_label, hig_thre=None, low_thre=None):
+    #训练过程中
+    b, c, h, w = cam.shape
+    #pseudo_label = torch.zeros((b,h,w))
+    cls_label_rep = cls_label.unsqueeze(-1).unsqueeze(-1).repeat([1,1,h,w])
+    #(b,c) -> (b, c, 1, 1) -> (b,c,h,w)
+    valid_cam = cls_label_rep * cam + cls_label_rep * 1e-8
+    #表明哪些需要验证
+    cam_value, cam_indecies = valid_cam.max(dim=1, keepdim=False)
+    #b h w
+        # _pseudo_label += 1
+    roi_mask = torch.clone(cam_indecies)
+    # for b in range(valid_cam.shape[0]):
+    #     for channel in range(valid_cam.shape[1]):
+    #         print_cam = valid_cam[b][channel].cpu()
+            
+    #         if torch.sum(print_cam)> 1e-2:
+    #             plt.imshow(print_cam, cmap='jet')
+    #             plt.colorbar()
+    #             plt.title(f'Activation Map - Channel {channel}')
+    #             plt.savefig(f'activation_map_{b}_{channel}.png')
+    #             plt.close()
+    
+    roi_mask[cam_value<=hig_thre] = -1
+    roi_mask[cam_value<=low_thre] = -2    #roi区域（uncertainty区域mask设置为1,bg为0，物体区为2）
+    
+    
+    return roi_mask
+
+
 def get_valid_cam(cam, cls_label):
     b, c, h, w = cam.shape
     #pseudo_label = torch.zeros((b,h,w))
@@ -1345,7 +1375,7 @@ def cam_to_label_resized(cam, cls_label, img_box=None, bkg_thre=None, high_thre=
 
     return valid_cam, pseudo_label
 
-def get_per_pic_thre(pesudo_label,gd_label):
+def get_per_pic_thre(pesudo_label,gd_label,uncertain_region_thre):
     #pesudo_label [b,h,w]
     
     b,h,w = pesudo_label.size()
@@ -1364,7 +1394,45 @@ def get_per_pic_thre(pesudo_label,gd_label):
         thre = counts / (h*w)
         thre_uncertain = count_uncertain / (h*w)
         temp_thre = torch.zeros(c+1).cuda()
-        temp_thre[elements.tolist()] = torch.minimum(thre + 0.2 * (thre_uncertain/ ((len(elements)-1)+1e-6)),torch.tensor(0.99))
+        temp_thre[elements.tolist()] = torch.minimum(thre + uncertain_region_thre * (thre_uncertain/ ((len(elements)-1)+1e-6)),torch.tensor(0.99))
         thre_list.append(temp_thre)
     per_pic_thre = torch.stack(thre_list)
     return per_pic_thre
+
+
+def select_local_patch(pesudo_label):
+    #[b, h , w]
+    
+    b,h,w = pesudo_label.size()
+    patch_list = []
+    for i in range(b):
+        current = pesudo_label[i]
+        
+        classes = torch.unique(current)
+        selected = torch.zeros_like(current, dtype=torch.bool)
+        
+        # 随机选择至少一个存在的所有类的点
+        for class_ in classes:
+            # 找到当前类的索引
+            indices = torch.nonzero(current == class_, as_tuple=False)
+            
+            # 随机选择一个点
+            selected_index = indices[torch.randint(len(indices), size=(1,))]
+            
+            # 将选择的点标记为已选择
+            selected[selected_index[0], selected_index[1]] = True
+        
+        # 从已选择的点中随机选择额外的点，直到达到num_select
+        while selected.sum() < num_selected:
+            # 找到未选择的点的索引
+            indices = torch.nonzero(~selected, as_tuple=False)
+
+            selected_index = indices[torch.randint(len(indices), size=(1,))]
+            selected[selected_index[0], selected_index[1]] = True
+        
+        # 返回选择的点的索引
+        selected_indices = torch.nonzero(selected, as_tuple=False)
+        selected_class = current[selected_index[0], selected_index[1]]
+        patch_list.append((selected_class, selected_indices))
+
+    return patch_list

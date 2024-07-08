@@ -124,9 +124,9 @@ def show_mask_cam(cams_aux,cls_label,low_thre,high_thre, branch_name):
     
     plt.imshow(roi_mask_crop[0].squeeze(0).cpu(), cmap='jet', vmin=-2, vmax=20)
     plt.colorbar()
-    plt.title(branch_name + "_mask")
+    plt.title(branch_name + "mask")
     
-    plt.savefig(f'mask' + branch_name + '.png')
+    plt.savefig('output-image'+ "/" +f'mask' + branch_name + '.png')
     plt.close()
 
 def validate(model=None, data_loader=None, args=None):
@@ -246,7 +246,7 @@ def train(args=None):
     
 #pretrained_load——————————————————————————————————————————————————————————————————————————————————————————————————
     # CPC_loss = CPCLoss().cuda()
-    trained_state_dict = torch.load('/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/du_head_spacial_bce/checkpoints/default_model_iter_8000.pth', map_location="cpu")
+    trained_state_dict = torch.load('/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/du_spacial_token_wo mix/checkpoints/default_model_iter_8000.pth', map_location="cpu")
     new_state_dict = OrderedDict()
     
     if 'model' in trained_state_dict:
@@ -413,6 +413,7 @@ def train(args=None):
         
         
 #b1 b2 generate pesudo-label and seg------------------------------------------------------------------------------------------------------------------------------------------
+        b1_mix_cam = 0.7 * b1_cams.detach() + 0.3 * b2_cams.detach()
         b1_valid_cam, _ = cam_to_label(b1_cams.detach(), cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=args.bkg_thre, high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index)
         b1_refined_pseudo_label = refine_cams_with_bkg_v2(par, inputs_denorm, cams=b1_valid_cam, cls_labels=cls_label,  high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index, img_box=img_box, )
         b2_segs = F.interpolate(b2_segs, size=b1_refined_pseudo_label.shape[1:], mode='bilinear', align_corners=False)
@@ -420,6 +421,7 @@ def train(args=None):
         b2_seg_loss = get_seg_loss(b2_segs, b1_refined_pseudo_label.type(torch.long), ignore_index=args.ignore_index)
         #cross head
         
+        b2_mix_cam = 0.7 * b2_cams.detach() + 0.3 * b1_cams.detach()
         b2_valid_cam, _ = cam_to_label(b2_cams.detach(), cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=args.bkg_thre, high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index)
         b2_refined_pseudo_label = refine_cams_with_bkg_v2(par, inputs_denorm, cams=b2_valid_cam, cls_labels=cls_label,  high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index, img_box=img_box, )
         b1_segs = F.interpolate(b1_segs, size=b2_refined_pseudo_label.shape[1:], mode='bilinear', align_corners=False)
@@ -432,6 +434,8 @@ def train(args=None):
         from PIL import Image, ImageOps
         show_mask_cam(b1_cams,cls_label,args.low_thre,args.high_thre, 'b1_cam')
         show_mask_cam(b2_cams,cls_label,args.low_thre,args.high_thre, 'b2_cam')
+        show_mask_cam(b1_mix_cam,cls_label,args.low_thre,args.high_thre, 'b1_mix_cam')
+        show_mask_cam(b2_mix_cam,cls_label,args.low_thre,args.high_thre, 'b2_mix_cam')
         show_mask_cam(b1_cams_aux,cls_label,args.low_thre,args.high_thre, 'b1_cam_aux')
         show_mask_cam(b2_cams_aux,cls_label,args.low_thre,args.high_thre, 'b2_cam_aux')
         input_image = TF.to_pil_image(image_origin[0].permute(2,0,1))
