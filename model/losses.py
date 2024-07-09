@@ -803,3 +803,104 @@ class DenseEnergyLoss(nn.Module):
             self.sigma_rgb, self.sigma_xy, self.weight, self.scale_factor
         )
         
+
+class ContrastLoss(nn.Module):   
+    def __init__(self,temp=1.0,num_cls = 20, buffer_lenth = 768 ,buffer_dim = 512):
+        super().__init__()
+        self.temp = temp
+        # self.center_momentum = center_momentum
+
+        self.buffer_cls = num_cls * 2
+        self.buffer_dim = buffer_dim
+        self.buffer_lenth = buffer_lenth
+        self.feature_contrast = torch.zeros(self.buffer_cls,self.buffer_lenth ,self.buffer_dim)
+        self.is_used_tag = torch.zeros(self.buffer_cls,self.buffer_lenth)
+
+
+    def forward(self, feature_contrast, cls_label):
+        #                   [0,20]        [0,19]
+        b, _ = cls_label.shape
+        tempreture = 1.0
+        contrastive_loss = 0
+        for i in range(b):
+            bg_feature = feature_contrast[i][0]
+            feature_fg_contrast = feature_contrast[i][1:]
+            cls_index = torch.where(cls_label[i]==1)
+            for cls in cls_index[0]:
+                cls = cls.item()
+                cls_feature = feature_fg_contrast[cls]
+                
+                buffer_index = 2*cls + 1 #buffer_current_index
+                #positive
+                
+                
+                self.is_used_tag[buffer_index][0] = 1 
+                self.is_used_tag[buffer_index-1][0] = 1
+               
+                self.feature_contrast[buffer_index, 0] = cls_feature.detach()
+                self.feature_contrast[buffer_index-1, 0] = bg_feature.detach()
+
+                
+                
+                positive_select_tag = self.is_used_tag[buffer_index] == 1
+                
+                positive_group = [torch.mean(self.feature_contrast[buffer_index][positive_select_tag],dim = 0)]
+                
+                negetive_in_buffer = []
+                #negetive 现在是所有与cls不同的不管bg or fg都为negative
+                for x in range(self.buffer_cls):
+                    if x!=buffer_index:
+                        negative_select_tag = self.is_used_tag[x] == 1
+                        if sum(negative_select_tag)!=0:
+                            negetive_in_buffer.append(torch.mean(self.feature_contrast[x][negative_select_tag],dim=0)) 
+
+                    
+                
+                # negetive_in_pic = [feature_fg_contrast[x].detach() for x in cls_index[0] if x.item()!=cls] + [bg_feature.detach()]
+                
+                
+                negative_group = negetive_in_buffer #+ negetive_in_pic
+                
+                
+                #contrast loss and infoNCE
+                # 计算正类pair的相似度
+                # positive_similarity = torch.cosine_similarity(cls_feature, torch.stack(positive_group))
+
+                # # 计算负类pair的相似度
+
+                # negative_similarity = torch.cat([torch.cosine_similarity(cls_feature, negative_pair.unsqueeze(0)) for negative_pair in negative_group])
+                
+                positive_similarity = torch.dot(cls_feature, torch.stack(positive_group).squeeze(0)).unsqueeze(0)
+                negative_similarity = torch.stack([torch.dot(cls_feature, negative_pair) for negative_pair in negative_group])
+                
+                n_positive = len(positive_group)
+                n_negative = len(negative_group)
+
+                total_samples = n_positive + n_negative
+                labels = torch.zeros(total_samples)
+                labels[:n_positive] = 1
+
+                logits = torch.cat([positive_similarity, negative_similarity])
+
+                div = torch.sum(torch.exp(logits/tempreture))
+                head = torch.exp(positive_similarity/tempreture)
+                prob_logits = torch.div(head , div)
+                infoNCE_loss = -(torch.log(prob_logits))
+                infoNCE_loss = infoNCE_loss / len(cls_index[0])
+               
+                # 构建InfoNCE loss
+                # targets = torch.cat([torch.ones_like(positive_similarity), torch.zeros_like(negative_similarity)])
+                # logits = torch.abs(torch.cat([positive_similarity, negative_similarity]))
+                # loss = F.binary_cross_entropy(logits, targets)
+                contrastive_loss  = contrastive_loss + infoNCE_loss
+                #logits?
+                self.is_used_tag[buffer_index] = torch.roll(self.is_used_tag[buffer_index], shifts=1, dims=0)
+                self.is_used_tag[buffer_index-1] = torch.roll(self.is_used_tag[buffer_index-1], shifts=1, dims=0)
+                self.feature_contrast[buffer_index] = torch.roll(self.feature_contrast[buffer_index], shifts=1, dims=0)
+                self.feature_contrast[buffer_index-1] = torch.roll(self.feature_contrast[buffer_index-1], shifts=1, dims=0)
+                
+
+                                
+
+
+        return contrastive_loss.cuda() / b

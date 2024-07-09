@@ -48,7 +48,7 @@ class CTCHead(nn.Module):
 
 class Fmap_proj_Head(nn.Module):
     #cls-token投影
-    def __init__(self, in_dim, out_dim=4096, norm_last_layer=True, nlayers=3, hidden_dim=2048, bottleneck_dim=2048):
+    def __init__(self, in_dim, out_dim=512, norm_last_layer=True, nlayers=3, hidden_dim=1024, bottleneck_dim=512):
         super().__init__()
         nlayers = max(nlayers, 1)
         if nlayers == 1:
@@ -689,6 +689,186 @@ class network(VisionTransformer):
         else:
             return cls_x4, seg, _x4, cls_aux, cam_12th, cls_token,
 
+
+
+
+
+#Contrastive learning network--------------------------------------------------------------------------------------------------------------------------------
+
+
+class network_CL(VisionTransformer):
+    def __init__(self, backbone, num_classes=None, pretrained=None, init_momentum=None, aux_layer=None):
+        super().__init__()
+        self.num_classes = num_classes
+        self.init_momentum = init_momentum
+
+        img_size = to_2tuple(self.img_size)
+        self.patch_size = patch_size = to_2tuple(self.patch_embed.patch_size)
+        num_patches = (img_size[1] // patch_size[1]) * (img_size[0] // patch_size[0])
+
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, self.embed_dim))
+        self.pos_embed_pat = nn.Parameter(torch.zeros(1, num_patches, self.embed_dim))
+
+        trunc_normal_(self.cls_token, std=.02)
+        # trunc_normal_(self.pos_embed_cls, std=.02)
+        trunc_normal_(self.pos_embed_pat, std=.02)
+
+        self.patch_proj = Fmap_proj_Head(in_dim=self.embed_dim, out_dim=512)
+
+        self.in_channels = self.embed_dim
+        #如果 self.encoder 对象或类的实例具有属性 embed_dim，
+        # 则将 self.in_channels 设置为长度为4的列表，每个元素都是 self.encoder.embed_dim。
+        # 【D,D,D,D】
+        
+        # self.pooling = F.adaptive_avg_pool1d
+        self.decoder = decoder.LargeFOV(in_planes=self.in_channels, out_planes=self.num_classes,)
+        #                                                 D
+        self.classifier = nn.Conv2d(in_channels=self.in_channels, out_channels=self.num_classes-1, kernel_size=1, bias=False,)
+        self.aux_classifier = nn.Conv2d(in_channels=self.in_channels, out_channels=self.num_classes-1, kernel_size=1, bias=False,)
+        # self.fmap_fusion = nn.Linear(in_features=4 * self.in_channels,out_features= self.in_channels ,bias= True)
+        # self.token_classifier = nn.Linear(in_features=self.in_channels, out_features=self.num_classes-1,bias=False,)
+        #两个CAM（一个辅助的，一个后边儿的）
+
+    @torch.no_grad()
+    def _EMA_update_encoder_teacher(self, n_iter=None):
+        ## no scheduler here
+        #为了更新p-global
+        momentum = self.init_momentum
+        for param, param_t in zip(self.proj_head.parameters(), self.proj_head_t.parameters()):
+            param_t.data = momentum * param_t.data + (1. - momentum) * param.data
+
+    def get_param_groups(self):
+
+        param_groups = [[], [], [], []] # backbone; backbone_norm; cls_head; seg_head;
+        param_groups_name = [[], [], [], []] # backbone; backbone_norm; cls_head; seg_head;
+
+        param_groups[2].append(self.classifier.weight)
+        param_groups_name[2].append(self.classifier.weight)
+        param_groups[2].append(self.aux_classifier.weight)
+        param_groups_name[2].append(self.aux_classifier.weight)
+        
+
+        for name, param in list(self.patch_proj.named_parameters()):
+            param_groups[2].append(param)
+
+
+
+        for name, param in list(self.decoder.named_parameters()):
+            param_groups[3].append(param)
+
+
+        for name, param in list(self.named_parameters()):
+            if id(param) not in (id(p) for p in param_groups[2]) and id(param) not in (id(p) for p in param_groups[3]):
+                if "norm" in name:
+                    param_groups[1].append(param)
+                    param_groups_name[1].append(name)
+                else:
+                    param_groups[0].append(param)
+                    param_groups_name[0].append(name)
+
+        return param_groups
+
+    def to_2D(self, x, h, w):
+        #x B N D
+        n, hw, c = x.shape
+        x = x.transpose(1, 2).reshape(n, c, h, w)
+        #b C H W
+        return x
+
+    def forward_cam_mask_for_contrast(self, fmap, cam_mask,cls_num = 20,proj_dim = 512):
+        #[b,d,h,w] [b,h,w]
+        b, d, h, w = fmap.shape
+        # feature_list = []
+        feature_store = torch.zeros([b,cls_num + 1,proj_dim])
+        for i in range(b):
+            current_cam = fmap[i]
+            current_mask = cam_mask[i]
+            elements = torch.unique(current_mask)
+            elements_list = elements.tolist()
+            elements_list = [x for x in elements_list if x != 255]
+            
+            #这里好好想想对bg_做avg pooling合不合理
+            for element in elements_list:
+                cam_class = current_cam[:,current_mask==element]
+                feature_class = torch.mean(cam_class, dim=-1)
+                feature_proj = self.patch_proj(feature_class)
+                feature_store[i][element] = feature_proj
+
+        
+        return feature_store
+
+
+    def forward_features(self, x, n=12):
+
+        x = self.prepare_tokens(x)
+
+        x = self.pos_drop(x)
+        embeds = []
+        for blk in self.blocks:
+            x, weights = blk(x,)
+            embeds.append(x)
+
+        x = self.norm(x)
+        embeds[-1] = x
+        return x[:, 0], x[:, 1:], embeds[self.aux_layer][:, 1:],embeds
+
+    def forward(self, x, cam_mask=None ,cam_only=False, crops=None, n_iter=None,cam_crop = False,select_k = 1,return_cam = False):
+        #x (b c h w) [2 3 448 448]
+        cls_token ,_x, x_aux, embeds= self.forward_features(x)
+        #cls-token final-patch  mid-patch
+        #b 1 D     B N（784） D（768）         B N D
+
+        h, w = x.shape[-2] // self.patch_size[0], x.shape[-1] // self.patch_size[1]
+
+        _x4 = self.to_2D(_x, h, w)
+        #B D 28 28
+        _x_aux = self.to_2D(x_aux, h, w)
+        #B C H W(patch-num)
+        seg = self.decoder(_x4) 
+        #图片尺寸没有变化，感受野变大了[2 21 28 28]
+        if cam_only:
+
+            cam = F.conv2d(_x4, self.classifier.weight).detach()
+            cam_aux = F.conv2d(_x_aux, self.aux_classifier.weight).detach()
+                            # INPUT D OUT C  KERNEL 1*1
+            return cam_aux, cam 
+
+        if return_cam:
+            cam_12th = cam = F.conv2d(_x4, self.classifier.weight)
+            if cam_mask != None:
+                contrast_feature = self.forward_cam_mask_for_contrast(_x4, cam_mask,cls_num=20,proj_dim = 512)
+            
+            
+
+
+        
+        #B N D
+        x_aux_cls = _x_aux.view(_x_aux.shape[0],_x_aux.shape[1],-1).permute(0,2,1)
+        #B N D
+        sorted_x_aux_cls,_ = torch.sort(x_aux_cls,-2,descending=True)
+        cls_aux = torch.mean(sorted_x_aux_cls[:,:5,:],dim=-2).unsqueeze(-1).unsqueeze(-1)
+        cls_aux = self.aux_classifier(cls_aux)
+
+        x4_cls = _x4.view(_x4.shape[0],_x4.shape[1],-1).permute(0,2,1)
+        #B N D
+        sorted_x4_cls,_ = torch.sort(x4_cls,-2,descending=True)
+        cls_x4 = torch.mean(sorted_x4_cls[:,:5,:],dim=-2).unsqueeze(-1).unsqueeze(-1)
+        cls_x4 = self.classifier(cls_x4)
+    
+
+        cls_x4 = cls_x4.view(-1, self.num_classes-1)
+        cls_aux = cls_aux.view(-1, self.num_classes-1)
+            # cls_to_classify = self.token_classifier(cls_token)
+        #生成CAM 并分类提供监督
+        #分类
+        
+        if crops is None:
+            return cls_x4, seg, _x4, cls_aux
+        elif not return_cam:
+            return cls_x4, seg, _x4, cls_aux, 
+        else:
+            return cls_x4, seg, _x4, cls_aux, cam_12th, cls_token,contrast_feature
+
 def get_pertrained_dict(pretrain_path):
     trained_state_dict = torch.load(pretrain_path)
     from collections import OrderedDict
@@ -703,6 +883,56 @@ def get_pertrained_dict(pretrain_path):
             k = k.replace('module.', '')
             new_state_dict[k] = v
     return new_state_dict
+
+
+#-------------------------------------------------------------------------------------------------
+class network_du_heads_independent_config_cl(nn.Module):
+    def __init__(self, backbone, num_classes=None, pretrained=None, init_momentum=None, aux_layer=None, pretrained_path= None):
+        super(network_du_heads_independent_config_cl, self).__init__()
+
+        self.branch1 = network_CL(backbone, num_classes, pretrained, init_momentum, aux_layer)
+        self.branch2 = network_CL(backbone, num_classes, pretrained, init_momentum, aux_layer)
+        
+        b1_pretrained_path = '/home/zhonggai/python-work-space/DEFormer/DEFormer/jx_vit_base_p16_224-80ecf9dd.pth'
+        b2_pretrained_path = '/home/zhonggai/python-work-space/DEFormer/DEFormer/jx_vit_base_p16_224-80ecf9dd.pth'
+        b1_pretrained_dict = get_pertrained_dict(b1_pretrained_path)
+        b2_pretrained_dict = get_pertrained_dict(b2_pretrained_path)
+        
+        self.branch1.load_state_dict(b1_pretrained_dict, strict=False)
+        self.branch2.load_state_dict(b2_pretrained_dict, strict=False)
+
+    def get_param_groups(self):
+        b1_param_groups = self.branch1.get_param_groups()
+        b2_param_groups = self.branch2.get_param_groups()
+        param_groups = [b1_param_groups[0]+b2_param_groups[0],b1_param_groups[1]+b2_param_groups[1],b1_param_groups[2]+b2_param_groups[2],b1_param_groups[3]+b2_param_groups[3]]
+        return param_groups
+        
+    def eval_branch(self,branch):
+        if branch == 'b1':
+            return self.branch1
+        else:
+            return self.branch2
+
+    def forward(self, x, cam_mask=None,cam_only=False, crops=None, n_iter=None,cam_crop = False,select_k = 1,return_cam = False):
+        if cam_only == True:
+            b1_cam_aux, b1_cam  = self.branch1.forward(x, cam_mask, cam_only, crops, n_iter, cam_crop, select_k, return_cam)
+            b2_cam_aux, b2_cam  = self.branch2.forward(x, cam_mask, cam_only, crops, n_iter, cam_crop, select_k, return_cam)
+            return (b1_cam_aux, b2_cam_aux), (b1_cam, b2_cam)
+        
+        else:
+            if return_cam == True:
+                (b1_cam_mask,b2_cam_mask) = cam_mask
+                
+                b1_cls_x4, b1_seg, b1_x4, b1_cls_aux, b1_cam12th, b1_cls_token, contrast_feature_b1 = self.branch1.forward(x,b1_cam_mask, cam_only, crops, n_iter, cam_crop, select_k, return_cam)
+                b2_cls_x4, b2_seg, b2_x4, b2_cls_aux, b2_cam12th, b2_cls_token, contrast_feature_b2 = self.branch2.forward(x,b2_cam_mask, cam_only, crops, n_iter, cam_crop, select_k, return_cam)  
+                return (b1_cls_x4,b2_cls_x4),(b1_seg,b2_seg), (b1_x4, b2_x4), (b1_cls_aux, b2_cls_aux), (b1_cam12th, b2_cam12th) , (b1_cls_token, b2_cls_token),(contrast_feature_b1, contrast_feature_b2)
+            else:
+                AssertionError("Error")
+
+
+
+
+#---------------------------------------------------------------------
 
 class network_du_heads_independent_config(nn.Module):
     def __init__(self, backbone, num_classes=None, pretrained=None, init_momentum=None, aux_layer=None, pretrained_path= None):
@@ -754,46 +984,48 @@ class network_du_heads_independent_config(nn.Module):
 
 
 
-class network_du_heads_shared_config(nn.Module):
-    def __init__(self, backbone, num_classes=None, pretrained=None, init_momentum=None, aux_layer=None, pretrained_path= None):
-        super(network_du_heads_shared_config, self).__init__()
-        shared_network = network(backbone, num_classes, pretrained, init_momentum, aux_layer)
-        self.branch1 = shared_network
-        self.branch2 = shared_network
+
+
+# class network_du_heads_shared_config(nn.Module):
+#     def __init__(self, backbone, num_classes=None, pretrained=None, init_momentum=None, aux_layer=None, pretrained_path= None):
+#         super(network_du_heads_shared_config, self).__init__()
+#         shared_network = network(backbone, num_classes, pretrained, init_momentum, aux_layer)
+#         self.branch1 = shared_network
+#         self.branch2 = shared_network
         
-        pretrained_path = '/home/zhonggai/python-work-space/DEFormer/DEFormer/jx_vit_base_p16_224-80ecf9dd.pth'
-        network_pertrained_dict = get_pertrained_dict(pretrained_path)
-        shared_network.load_state_dict(network_pertrained_dict, strict=False)
+#         pretrained_path = '/home/zhonggai/python-work-space/DEFormer/DEFormer/jx_vit_base_p16_224-80ecf9dd.pth'
+#         network_pertrained_dict = get_pertrained_dict(pretrained_path)
+#         shared_network.load_state_dict(network_pertrained_dict, strict=False)
 
-    def get_param_groups(self):
-        param_groups = self.branch1.get_param_groups()
+#     def get_param_groups(self):
+#         param_groups = self.branch1.get_param_groups()
 
-        return param_groups
+#         return param_groups
     
-    def eval_branch(self,branch):
-        if branch == 'b1':
-            return self.branch1
-        else:
-            return self.branch2
+#     def eval_branch(self,branch):
+#         if branch == 'b1':
+#             return self.branch1
+#         else:
+#             return self.branch2
     
 
-    def forward(self, x, cam_only=False, crops=None, n_iter=None,cam_crop = False,select_k = 1,return_cam = False):
-        if cam_only == True:
-            b1_cam_aux, b1_cam  = self.branch1.forward(x, cam_only, crops, n_iter, cam_crop, select_k, return_cam)
-            b2_cam_aux, b2_cam  = self.branch2.forward(x, cam_only, crops, n_iter, cam_crop, select_k, return_cam)
-            return (b1_cam_aux, b2_cam_aux), (b1_cam, b2_cam)
+#     def forward(self, x, cam_only=False, crops=None, n_iter=None,cam_crop = False,select_k = 1,return_cam = False):
+#         if cam_only == True:
+#             b1_cam_aux, b1_cam  = self.branch1.forward(x, cam_only, crops, n_iter, cam_crop, select_k, return_cam)
+#             b2_cam_aux, b2_cam  = self.branch2.forward(x, cam_only, crops, n_iter, cam_crop, select_k, return_cam)
+#             return (b1_cam_aux, b2_cam_aux), (b1_cam, b2_cam)
         
-        else:
-            if crops is None:
-                b1_cls_x4, b1_seg, b1_x4, b1_cls_aux = self.branch1.forward(x, cam_only, crops, n_iter, cam_crop, select_k, return_cam)
-                b2_cls_x4, b2_seg, b2_x4, b2_cls_aux = self.branch2.forward(x, cam_only, crops, n_iter, cam_crop, select_k, return_cam)
-                return (b1_cls_x4,b2_cls_x4),(b1_seg,b2_seg), (b1_x4, b2_x4), (b1_cls_aux, b2_cls_aux)
-            elif not return_cam:
-                b1_cls_x4, b1_seg, b1_x4, b1_cls_aux = self.branch1.forward(x, cam_only, crops, n_iter, cam_crop, select_k, return_cam)
-                b2_cls_x4, b2_seg, b2_x4, b2_cls_aux = self.branch2.forward(x, cam_only, crops, n_iter, cam_crop, select_k, return_cam)            
-                return (b1_cls_x4,b2_cls_x4),(b1_seg,b2_seg), (b1_x4, b2_x4), (b1_cls_aux, b2_cls_aux)
-            else:
-                b1_cls_x4, b1_seg, b1_x4, b1_cls_aux, b1_cam12th = self.branch1.forward(x, cam_only, crops, n_iter, cam_crop, select_k, return_cam)
-                b2_cls_x4, b2_seg, b2_x4, b2_cls_aux, b2_cam12th = self.branch2.forward(x, cam_only, crops, n_iter, cam_crop, select_k, return_cam)  
-                return (b1_cls_x4,b2_cls_x4),(b1_seg,b2_seg), (b1_x4, b2_x4), (b1_cls_aux, b2_cls_aux), (b1_cam12th, b2_cam12th) 
+#         else:
+#             if crops is None:
+#                 b1_cls_x4, b1_seg, b1_x4, b1_cls_aux = self.branch1.forward(x, cam_only, crops, n_iter, cam_crop, select_k, return_cam)
+#                 b2_cls_x4, b2_seg, b2_x4, b2_cls_aux = self.branch2.forward(x, cam_only, crops, n_iter, cam_crop, select_k, return_cam)
+#                 return (b1_cls_x4,b2_cls_x4),(b1_seg,b2_seg), (b1_x4, b2_x4), (b1_cls_aux, b2_cls_aux)
+#             elif not return_cam:
+#                 b1_cls_x4, b1_seg, b1_x4, b1_cls_aux = self.branch1.forward(x, cam_only, crops, n_iter, cam_crop, select_k, return_cam)
+#                 b2_cls_x4, b2_seg, b2_x4, b2_cls_aux = self.branch2.forward(x, cam_only, crops, n_iter, cam_crop, select_k, return_cam)            
+#                 return (b1_cls_x4,b2_cls_x4),(b1_seg,b2_seg), (b1_x4, b2_x4), (b1_cls_aux, b2_cls_aux)
+#             else:
+#                 b1_cls_x4, b1_seg, b1_x4, b1_cls_aux, b1_cam12th = self.branch1.forward(x, cam_only, crops, n_iter, cam_crop, select_k, return_cam)
+#                 b2_cls_x4, b2_seg, b2_x4, b2_cls_aux, b2_cam12th = self.branch2.forward(x, cam_only, crops, n_iter, cam_crop, select_k, return_cam)  
+#                 return (b1_cls_x4,b2_cls_x4),(b1_seg,b2_seg), (b1_x4, b2_x4), (b1_cls_aux, b2_cls_aux), (b1_cam12th, b2_cam12th) 
             

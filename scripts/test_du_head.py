@@ -423,7 +423,7 @@ def train(args=None):
         b2_seg_loss = get_seg_loss(b2_segs, b1_refined_pseudo_label.type(torch.long), ignore_index=args.ignore_index)
         #cross head
         
-        b2_mix_cams = 0.7 * b2_cams.detach() + 0.3 * b1_cams.detach()
+        b2_mix_cams = 0.5 * b2_cams.detach() + 0.5 * b1_cams.detach()
         b2_valid_cam, _ = cam_to_label(b2_mix_cams.detach(), cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=args.bkg_thre, high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index)
         b2_refined_pseudo_label = refine_cams_with_bkg_v2(par, inputs_denorm, cams=b2_valid_cam, cls_labels=cls_label,  high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index, img_box=img_box, )
         b1_segs = F.interpolate(b1_segs, size=b2_refined_pseudo_label.shape[1:], mode='bilinear', align_corners=False)
