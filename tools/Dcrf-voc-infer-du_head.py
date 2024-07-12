@@ -24,7 +24,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--infer_set", default="val", type=str, help="infer_set")
 parser.add_argument("--pooling", default="gmp", type=str, help="pooling method")
 # parser.add_argument("--model_path", default="workdir_voc_final2/2022-11-04-01-50-48-441426/checkpoints/model_iter_20000.pth", type=str, help="model_path")
-parser.add_argument("--model_path", default="/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/73.6(du_0.7/0.5_mix)/checkpoints/default_model_iter_8000.pth", type=str, help="model_path")
+parser.add_argument("--model_path", default="/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/cl/checkpoints/default_model_iter_8000.pth", type=str, help="model_path")
 
 parser.add_argument("--backbone", default='vit_base_patch16_224', type=str, help="vit_base_patch16_224")
 parser.add_argument("--data_folder", default='../VOC2012', type=str, help="dataset folder")
@@ -183,7 +183,7 @@ def validate(args=None):
         for k, v in trained_state_dict.items():
             k = k.replace('module.', '')
             new_state_dict[k] = v
-    model.load_state_dict(state_dict=new_state_dict, strict=True)
+    model.load_state_dict(state_dict=new_state_dict, strict=False)
     model.eval()
 
     seg_score = _validate(model=model, data_loader=val_loader, args=args)

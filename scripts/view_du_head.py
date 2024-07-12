@@ -16,7 +16,7 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 from datasets import voc as voc
-from model.losses import get_masked_ptc_loss, get_seg_loss, CTCLoss_neg, DenseEnergyLoss, get_energy_loss,CPCLoss,get_spacial_bce_loss
+from model.losses import get_masked_ptc_loss, get_seg_loss, CTCLoss_neg, DenseEnergyLoss, get_energy_loss,CPCLoss,get_spacial_bce_loss,get_seg_consistence_loss
 from model.model_seg_neg import network
 from model.double_seg_head import network_du_heads_independent_config
 from torch.nn.parallel import DistributedDataParallel
@@ -25,7 +25,7 @@ from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 from model.PAR import PAR
 from utils import evaluate, imutils, optimizer
-from utils.camutils import single_class_crop,cam_to_label, cam_to_roi_mask2, multi_scale_cam2, label_to_aff_mask, refine_cams_with_bkg_v2,cam_to_label_resized,get_per_pic_thre,multi_scale_cam2_du_heads
+from utils.camutils import cam_to_label, cam_to_roi_mask2, multi_scale_cam2, label_to_aff_mask, refine_cams_with_bkg_v2,cam_to_label_resized,get_per_pic_thre_v2,multi_scale_cam2_du_heads
 from utils.pyutils import AverageMeter, cal_eta, format_tabs, setup_logger
 torch.hub.set_dir("./pretrained")
 parser = argparse.ArgumentParser()
@@ -45,7 +45,7 @@ parser.add_argument("--work_dir", default="work_dir_voc_wseg", type=str, help="w
 
 parser.add_argument("--train_set", default="train_aug", type=str, help="training split")
 parser.add_argument("--val_set", default="val", type=str, help="validation split")
-parser.add_argument("--spg", default=2, type=int, help="samples_per_gpu")
+parser.add_argument("--spg", default=1, type=int, help="samples_per_gpu")
 parser.add_argument("--scales", default=(0.5, 2), help="random rescale in training")
 
 parser.add_argument("--optimizer", default='PolyWarmupAdamW', type=str, help="optimizer")
@@ -78,7 +78,7 @@ parser.add_argument("--aux_layer", default=-3, type=int, help="aux_layer")
 parser.add_argument("--seed", default=0, type=int, help="fix random seed")
 parser.add_argument("--save_ckpt",default=True, action="store_true", help="save_ckpt")
 
-parser.add_argument('--local-rank', type=int, default=5)
+parser.add_argument('--local-rank', type=int, default=1)
 parser.add_argument("--num_workers", default=10, type=int, help="num_workers")
 parser.add_argument('--backend', default='nccl')
 
@@ -246,7 +246,7 @@ def train(args=None):
     
 #pretrained_load——————————————————————————————————————————————————————————————————————————————————————————————————
     # CPC_loss = CPCLoss().cuda()
-    trained_state_dict = torch.load('/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/73.6result/checkpoints/default_model_iter_8000.pth', map_location="cpu")
+    trained_state_dict = torch.load('/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/2024-07-11-20-07-48-446315/checkpoints/default_model_iter_8000.pth', map_location="cpu")
     new_state_dict = OrderedDict()
     
     if 'model' in trained_state_dict:
@@ -259,7 +259,7 @@ def train(args=None):
             k = k.replace('module.', '')
             new_state_dict[k] = v
 
-    model.load_state_dict(state_dict=new_state_dict, strict=True)
+    model.load_state_dict(state_dict=new_state_dict, strict=False)
     # # if 'CPC_loss' in trained_state_dict:
     # #     CPC_loss = trained_state_dict['CPC_loss']
 
@@ -387,7 +387,7 @@ def train(args=None):
         # refined_aux_pesudo_label = refine_cams_with_bkg_v2(par, inputs_denorm, cams=valid_aux_cam, cls_labels=cls_label,  high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index, img_box=img_box, )
         #pesudo_label [b,h,w]
         aux_pesedo_show = b2_refined_aux_pesudo_label = cam_to_roi_mask2(b2_cams_aux.detach(), cls_label=cls_label, low_thre=args.low_thre, hig_thre=args.high_thre)
-        per_pic_thre = get_per_pic_thre(b2_refined_aux_pesudo_label, gd_label=cls_label, uncertain_region_thre = args.uncertain_region_thre)
+        per_pic_thre = get_per_pic_thre_v2(b2_refined_aux_pesudo_label, gd_label=cls_label, uncertain_region_thre = args.uncertain_region_thre)
         b2_spacial_bce_loss = get_spacial_bce_loss(b2_cam_12th, cls_label, per_pic_thre)
         b2_cls_loss = F.multilabel_soft_margin_loss(b2_cls, cls_label)
         b2_cls_loss_aux = F.multilabel_soft_margin_loss(b2_cls_aux, cls_label)
@@ -409,6 +409,7 @@ def train(args=None):
         # ctc_loss crop出来的结果过网络得cls，计算loss
         # ctc_loss = CTC_loss(out_s, out_t, flags,cls_label)
 
+    
         
         
         
@@ -430,6 +431,17 @@ def train(args=None):
         
         seg_loss = b1_seg_loss + b2_seg_loss
         
+#seg_result_consistence_loss--------------------------------------------------------------------------------
+        b1_seg_consistence_loss = get_seg_consistence_loss(b1_segs,b2_segs.detach())
+        b2_seg_consistence_loss = get_seg_consistence_loss(b2_segs,b1_segs.detach())
+        
+        seg_consistence_loss = 0.4 * b1_seg_consistence_loss + 0.6 * b2_seg_consistence_loss
+      
+
+    
+        
+        
+        
 #show mask --------------------------------------------------------------------------------------------------------------
         from PIL import Image, ImageOps
         show_mask_cam(b1_cams,cls_label,args.low_thre,args.high_thre, 'b1_cam')
@@ -438,11 +450,13 @@ def train(args=None):
         show_mask_cam(b2_mix_cam,cls_label,args.low_thre,args.high_thre, 'b2_mix_cam')
         show_mask_cam(b1_cams_aux,cls_label,args.low_thre,args.high_thre, 'b1_cam_aux')
         show_mask_cam(b2_cams_aux,cls_label,args.low_thre,args.high_thre, 'b2_cam_aux')
-        input_image = TF.to_pil_image(image_origin[0].permute(2,0,1))
+        input_image = TF.to_pil_image(inputs_denorm[0])
         input_image.save('input_image.png')
         show_seg(b1_segs,cls_label,args.low_thre,args.high_thre, 'b1_seg')
         show_seg(b2_segs,cls_label,args.low_thre,args.high_thre, 'b2_seg')        
 
+        
+        
         
         
 #b1 b2 ptc loss-------------------------------------------------------------------------------------------------------------------------------------

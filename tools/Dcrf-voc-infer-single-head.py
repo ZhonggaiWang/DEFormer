@@ -24,7 +24,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--infer_set", default="val", type=str, help="infer_set")
 parser.add_argument("--pooling", default="gmp", type=str, help="pooling method")
 # parser.add_argument("--model_path", default="workdir_voc_final2/2022-11-04-01-50-48-441426/checkpoints/model_iter_20000.pth", type=str, help="model_path")
-parser.add_argument("--model_path", default="/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/73.6(du_0.7/0.5_mix)/checkpoints/default_model_iter_8000.pth", type=str, help="model_path")
+parser.add_argument("--model_path", default="/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/2024-07-11-20-07-48-446315/checkpoints/default_model_iter_8000.pth", type=str, help="model_path")
 
 parser.add_argument("--backbone", default='vit_base_patch16_224', type=str, help="vit_base_patch16_224")
 parser.add_argument("--data_folder", default='../VOC2012', type=str, help="dataset folder")
@@ -60,8 +60,8 @@ def _validate(model=None, data_loader=None, args=None):
                 _inputs  = F.interpolate(inputs, size=[_h, _w], mode='bilinear', align_corners=False)
                 inputs_cat = torch.cat([_inputs, _inputs.flip(-1)], dim=0)
 
-                (segs_1,segs_2) = model(inputs_cat,)[1]
-                segs = 0.5 *segs_1 + 0.5 * segs_2
+                segs = model(inputs_cat,)[1]
+
                 segs = F.interpolate(segs, size=labels.shape[1:], mode='bilinear', align_corners=False)
 
                 # seg = torch.max(segs[:1,...], segs[1:,...].flip(-1))
@@ -186,7 +186,7 @@ def validate(args=None):
     model.load_state_dict(state_dict=new_state_dict, strict=True)
     model.eval()
 
-    seg_score = _validate(model=model, data_loader=val_loader, args=args)
+    seg_score = _validate(model=model.eval_branch('b1'), data_loader=val_loader, args=args)
     torch.cuda.empty_cache()
 
     crf_score = crf_proc()

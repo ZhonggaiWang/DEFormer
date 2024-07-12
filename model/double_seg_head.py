@@ -48,7 +48,7 @@ class CTCHead(nn.Module):
 
 class Fmap_proj_Head(nn.Module):
     #cls-token投影
-    def __init__(self, in_dim, out_dim=512, norm_last_layer=True, nlayers=3, hidden_dim=1024, bottleneck_dim=512):
+    def __init__(self, in_dim, out_dim=1024, norm_last_layer=True, nlayers=3, hidden_dim=1024, bottleneck_dim=512):
         super().__init__()
         nlayers = max(nlayers, 1)
         if nlayers == 1:
@@ -513,8 +513,8 @@ class network(VisionTransformer):
         # 【D,D,D,D】
         # self.pooling = F.adaptive_avg_pool1d
         #?
-        self.decoder = decoder.LargeFOV(in_planes=self.in_channels, out_planes=self.num_classes,)
-        #                                                 D
+        self.decoder = decoder.ASPP(in_planes=self.in_channels, out_planes=self.num_classes,)
+        # 
         self.classifier = nn.Conv2d(in_channels=self.in_channels, out_channels=self.num_classes-1, kernel_size=1, bias=False,)
         self.aux_classifier = nn.Conv2d(in_channels=self.in_channels, out_channels=self.num_classes-1, kernel_size=1, bias=False,)
         self.crop_classifier = nn.Conv2d(in_channels=self.in_channels, out_channels=self.num_classes-1, kernel_size=1, bias=False,)
@@ -713,7 +713,7 @@ class network_CL(VisionTransformer):
         # trunc_normal_(self.pos_embed_cls, std=.02)
         trunc_normal_(self.pos_embed_pat, std=.02)
 
-        self.patch_proj = Fmap_proj_Head(in_dim=self.embed_dim, out_dim=512)
+        self.patch_proj = Fmap_proj_Head(in_dim=self.embed_dim, out_dim=1024)
 
         self.in_channels = self.embed_dim
         #如果 self.encoder 对象或类的实例具有属性 embed_dim，
@@ -796,8 +796,14 @@ class network_CL(VisionTransformer):
 
         
         return feature_store
-
-
+    
+    def encode_local_pic(self, local_pic):
+        pics = torch.stack(local_pic)
+        cls_token,_,_,_ = self.forward_features(pics)
+        token_proj = self.patch_proj(cls_token)
+        return token_proj
+    
+    
     def forward_features(self, x, n=12):
 
         x = self.prepare_tokens(x)
@@ -812,7 +818,7 @@ class network_CL(VisionTransformer):
         embeds[-1] = x
         return x[:, 0], x[:, 1:], embeds[self.aux_layer][:, 1:],embeds
 
-    def forward(self, x, cam_mask=None ,cam_only=False, crops=None, n_iter=None,cam_crop = False,select_k = 1,return_cam = False):
+    def forward(self, x ,cam_mask=None ,cam_only=False, crops=None, n_iter=None,cam_crop = False,select_k = 1,return_cls_token = False, local_pic = None, local_flag=None):
         #x (b c h w) [2 3 448 448]
         cls_token ,_x, x_aux, embeds= self.forward_features(x)
         #cls-token final-patch  mid-patch
@@ -833,12 +839,11 @@ class network_CL(VisionTransformer):
                             # INPUT D OUT C  KERNEL 1*1
             return cam_aux, cam 
 
-        if return_cam:
-            cam_12th = cam = F.conv2d(_x4, self.classifier.weight)
-            if cam_mask != None:
-                contrast_feature = self.forward_cam_mask_for_contrast(_x4, cam_mask,cls_num=20,proj_dim = 512)
+        if return_cls_token:
+            if local_pic != None:
+                contrast_token_feature = self.encode_local_pic(local_pic)
             
-            
+        cam_12th = cam = F.conv2d(_x4, self.classifier.weight)
 
 
         
@@ -864,10 +869,10 @@ class network_CL(VisionTransformer):
         
         if crops is None:
             return cls_x4, seg, _x4, cls_aux
-        elif not return_cam:
-            return cls_x4, seg, _x4, cls_aux, 
+        elif return_cls_token:
+            return cls_x4, seg, _x4, cls_aux, cam_12th, cls_token,contrast_token_feature
         else:
-            return cls_x4, seg, _x4, cls_aux, cam_12th, cls_token,contrast_feature
+            return cls_x4, seg, _x4, cls_aux, cam_12th, cls_token,
 
 def get_pertrained_dict(pretrain_path):
     trained_state_dict = torch.load(pretrain_path)
@@ -913,19 +918,19 @@ class network_du_heads_independent_config_cl(nn.Module):
         else:
             return self.branch2
 
-    def forward(self, x, cam_mask=None,cam_only=False, crops=None, n_iter=None,cam_crop = False,select_k = 1,return_cam = False):
+    def forward(self, x, cam_mask=None,cam_only=False, crops=None, n_iter=None,cam_crop = False,select_k = 1,return_cls_token = False, local_pic = None):
         if cam_only == True:
-            b1_cam_aux, b1_cam  = self.branch1.forward(x, cam_mask, cam_only, crops, n_iter, cam_crop, select_k, return_cam)
-            b2_cam_aux, b2_cam  = self.branch2.forward(x, cam_mask, cam_only, crops, n_iter, cam_crop, select_k, return_cam)
+            b1_cam_aux, b1_cam  = self.branch1.forward(x, cam_mask, cam_only, crops, n_iter, cam_crop, select_k, return_cls_token,)
+            b2_cam_aux, b2_cam  = self.branch2.forward(x, cam_mask, cam_only, crops, n_iter, cam_crop, select_k, return_cls_token,)
             return (b1_cam_aux, b2_cam_aux), (b1_cam, b2_cam)
         
         else:
-            if return_cam == True:
+            if return_cls_token == True:
                 (b1_cam_mask,b2_cam_mask) = cam_mask
-                
-                b1_cls_x4, b1_seg, b1_x4, b1_cls_aux, b1_cam12th, b1_cls_token, contrast_feature_b1 = self.branch1.forward(x,b1_cam_mask, cam_only, crops, n_iter, cam_crop, select_k, return_cam)
-                b2_cls_x4, b2_seg, b2_x4, b2_cls_aux, b2_cam12th, b2_cls_token, contrast_feature_b2 = self.branch2.forward(x,b2_cam_mask, cam_only, crops, n_iter, cam_crop, select_k, return_cam)  
-                return (b1_cls_x4,b2_cls_x4),(b1_seg,b2_seg), (b1_x4, b2_x4), (b1_cls_aux, b2_cls_aux), (b1_cam12th, b2_cam12th) , (b1_cls_token, b2_cls_token),(contrast_feature_b1, contrast_feature_b2)
+                (b1_local_pic,b2_local_pic) = local_pic
+                b1_cls_x4, b1_seg, b1_x4, b1_cls_aux, b1_cam12th, b1_cls_token, contrast_feature_b1 = self.branch1.forward(x,b1_cam_mask, cam_only, crops, n_iter, cam_crop, select_k, return_cls_token,b1_local_pic)
+                b2_cls_x4, b2_seg, b2_x4, b2_cls_aux, b2_cam12th, b2_cls_token, contrast_feature_b2 = self.branch2.forward(x,b2_cam_mask, cam_only, crops, n_iter, cam_crop, select_k, return_cls_token,b2_local_pic)  
+                return (b1_cls_x4,b2_cls_x4),(b1_seg,b2_seg), (b1_x4, b2_x4), (b1_cls_aux, b2_cls_aux), (b1_cam12th, b2_cam12th) , (b1_cls_token, b2_cls_token), (contrast_feature_b1,contrast_feature_b2)
             else:
                 AssertionError("Error")
 
