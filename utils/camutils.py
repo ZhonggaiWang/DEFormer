@@ -561,208 +561,61 @@ def ignore_img_box(label, img_box, ignore_index):
 
     return pseudo_label
 
-def single_class_crop(images,cls_label = None, roi_mask=None, crop_num=8, crop_size=96):
+def single_class_crop(images,cls_label = None, roi_mask=None, crop_num=1, crop_size=64):
     #image 2 3 448 448
     crops = []
     
+    margin = int(crop_size/2)
+    padding = (margin, margin, margin, margin)
+    padded_image = F.pad(images, padding, mode='constant', value=0)
+
     b, c, h, w = images.shape
     
         # 2 8 3 96 96 
-    num_class = 21
-    flags = torch.zeros(size=(b, crop_num+2,num_class)).to(images.device)#b crop_num
-    flags[:,:2,1:] = cls_label.unsqueeze(1).repeat(1, 2, 1)
-
-    for i1 in range(b):
-        # input_image = TF.to_pil_image(images[0])
-        # input_image.save('input_image.png')
-        fg_pixel_number = 0
-        positive_ele = 0
-        #adaptive cut
-        positive_pixel = {}
-        may_fg_pixel_number = 0
-        mask_all_element, mask_all_counts = roi_mask[i1].unique(return_counts=True)
-        for element, count in zip(mask_all_element, mask_all_counts):
-            if element.item() >=-1:
-                may_fg_pixel_number += count.item()
-                if element.item()>=0:
-                    fg_pixel_number +=  count.item()
-                    positive_pixel[element.item()] = count.item()
-                    positive_ele +=1
-        # if positive_ele:
-        #     may_fg_pixel_number /= positive_ele
-        #     fg_pixel_number /= positive_ele
-        #     crop_size = math.sqrt(may_fg_pixel_number)
-        
-        # crop_size = (math.ceil(crop_size / 16)) * 16
-
-        # crop_size = max(crop_size,32)
-        # crop_size = min(crop_size,256)
-
-        crop_size = 96
+    num_class = 20
+    flags = []
+    for i in range(b):
+        cls_index = torch.where(cls_label[i] == 1)
+        current_mask = roi_mask[i]
+        for cls in cls_index[0]:
+            cls = cls.item()
+            fg_index = torch.where(current_mask == cls+1)
+            if len(fg_index[0]):
+                random_index = random.randint(0, fg_index[0].shape[0] - 1)
+                crop_index_x, crop_index_y = fg_index[0][random_index], fg_index[1][random_index]
+                select_index_x,select_index_y = crop_index_x*16, crop_index_y*16
+                x_start = select_index_x - crop_size // 2
+                x_end = select_index_x + crop_size // 2
+                y_start = select_index_y - crop_size // 2
+                y_end = select_index_y + crop_size // 2
+                x_start += margin
+                x_end += margin
+                y_start += margin
+                y_end += margin
 
 
-        temp_crops = torch.zeros(size=(b, crop_num, c, crop_size, crop_size)).to(images.device)
-        
-        # plt.imshow((roi_mask[i1]).cpu(), cmap='jet', vmin=-2, vmax=20)
-        # plt.colorbar()
-        # plt.title("full_mask")
-        
-        # plt.savefig(f'full_mask.png')
-        # plt.close()
-
-        margin = 0
-
-        k = crop_size//2 
-        threshold = crop_size**2 /4
-
-        roi_idx = roi_mask[i1, margin:(h-margin), margin:(w-margin)]  # 获取ROI的子张量
-        padding = (k, k, k, k)  # (left, right, top, bottom)
-        padded_roi_mask = F.pad(roi_mask, padding, value=-2)
-        padded_images = F.pad(images, padding, value=0)
-        # 获取中心点的索引
-        center_indices = torch.nonzero(roi_idx == -1).cpu()  # -1表示不确定的位置
-        
-        # if len(valid_indices)>=crop_num:    #     valid_indices = torch.stack(valid_indices,dim=0)
-        
-# 构造卷积核，用于计算邻域内的正类像素数量
-        class_potential_list = []
-        kernel = torch.ones((2*k+1, 2*k+1), dtype=torch.float32).cuda()
-        for class_mask_idx ,class_counts in positive_pixel.items():
-            conv_mask = roi_mask[i1].clone()
-            
-            
-            conv_mask[(conv_mask!=class_mask_idx) & (conv_mask >= 0)] = 255
-            conv_mask[(conv_mask == class_mask_idx) & (conv_mask >= 0)] = 256
-            conv_mask[(conv_mask!=class_mask_idx) & (conv_mask < 0)] = 0
-            conv_mask[conv_mask==255] = -1
-            conv_mask[conv_mask == 256] = 1
-            # plt.imshow(conv_mask.cpu(), cmap='jet', vmin=-1, vmax=1)
-            # plt.colorbar()
-            # plt.title("conv_mask")
-            
-            # plt.savefig('conv_mask.png')
-            # plt.close()
-            neighbor_counts = F.conv2d(conv_mask.float().unsqueeze(0).unsqueeze(0).float(), kernel.unsqueeze(0).unsqueeze(0), padding=k).squeeze(0).squeeze(0).long()
-        # 使用卷积操作计算邻域内的正类像素数量  类不平衡问题！
-        # neighbor_counts = F.conv2d((roi_mask[i1]>=0).float().unsqueeze(0).unsqueeze(0).float(), kernel.unsqueeze(0).unsqueeze(0), padding=0).squeeze(0).squeeze(0).long()
-            neighbor_counts_array = np.array(neighbor_counts.cpu())
-            # 获取指定坐标位置的元素
-            neighbor_counts = neighbor_counts_array[center_indices[:, 0], center_indices[:, 1]]
-            neighbor_counts = torch.tensor(neighbor_counts)
-            # neighbor_counts = torch.stack(neighbor_counts,dim=0)
-            #类不平衡问题?threshold  这里先用的是平均 选谁出来crop
-            valid_indices = center_indices[neighbor_counts > min(0.2 *class_counts,0.3*crop_size*crop_size)]
-            valid_indices.cuda()
-            valid_indices += k
-            class_potential_list.append(valid_indices)
-        
-# 计算每个类别应该抽取的数量
-        
-        # samples_per_class = crop_num // len(class_potential_list) + 1
-        samples_per_class = crop_num
-
-        # 创建一个空的最终候选点列表
-        final_candidates = []
-
-        # 遍历类别的候选点列表，检查每个类别的候选点数量是否大于等于 samples_per_class
-        for candidate_list in class_potential_list:
-            if len(candidate_list) >= samples_per_class:
-                # 对于满足条件的类别，从中随机抽取 samples_per_class 个元素，并将它们添加到最终候选点列表中
-                samples = random.choices(candidate_list, k=samples_per_class)
-                final_candidates.extend(samples)
-            else:
-                final_candidates.extend(candidate_list)
-
-        # 打乱最终候选点列表的顺序
-        random.shuffle(final_candidates)
-
-        if len(final_candidates) >= crop_num:
-            
-        # 截取最终候选点列表的前 crop_number 个元素作为最终的候选点
-            final_candidates = final_candidates[:crop_num]
-        # 找到符合条件的中心点索引
-        # 随机选取crop_num个中心点
-            crop_index = torch.stack(final_candidates)
-        #随机选取策略
-
-        #随机选取策略
-
-        else:
-            
-            #不取margin
-            # test = roi_mask[i1, margin:(h-margin), margin:(w-margin)]
-            # Flage = test[3,5] == roi_mask[i1,margin+3,margin+5]
-            
-            roi_index = (roi_mask[i1, margin:(h-margin), margin:(w-margin)] >= -2).nonzero() ## if NULL then random crop
-            rand_index = torch.randperm(roi_index.shape[0])
-            #torch.randperm() 函数返回一个随机排列的整数序列，范围从 0 到 roi_index.shape[0] - 1。
-            crop_index = roi_index[rand_index[:crop_num], :] + torch.full((1, 2), k).cuda()
-            # orgin = roi_index[rand_index[:crop_num], :] 
-
-        #[(1,2) (3,4) (5,6) ...]
-        for i2 in range(crop_num):
-            h0, w0 = crop_index[i2, 0], crop_index[i2, 1] # centered at (h0, w0)
-            #确定一个点
-            h_max = w_max = padded_images.shape[-1]
-            h_start = max(0,h0-k)
-            h_end = min(h_max,h0+k)
-            w_start = max(0, w0-k)
-            w_end = min(w_max,w0+k)
-            
-            temp_crops[i1, i2, ...] = padded_images[i1, :, h_start:h_end, w_start:w_end]
-            #temp_crops 的形状将是 [b, n, 3, crop_size, crop_size]
-            #...用于省略连续的冒号
-            temp_mask = padded_roi_mask[i1, h_start:h_end, w_start:w_end].cpu()
-            # if temp_mask.sum() / (crop_size*crop_size) <= 0.2:
-            #     ## if ratio of uncertain regions < 0.2 then negative
-            #     flags[i1, i2+2] = 0
-
-
-            # plt.imshow(temp_mask, cmap='jet', vmin=-2, vmax=20)
-            # plt.colorbar()
-            # plt.title("temp_mask")
-            # plt.savefig(f'{i2}temp_mask.png')
-            # plt.close()
-
-            # pil_image = TF.to_pil_image(temp_crops[i1][i2])
-            # pil_image.save(f'{i2}'+'crop_image.png')
-
-
-
-            unique_elements, counts = temp_mask.unique(return_counts=True)
-            sorted_indices = np.argsort(unique_elements.numpy())
-            sorted_indices = sorted_indices[::-1]
-            contiguous_array = np.copy(sorted_indices)
-# 使用sorted_indices对unique_elements进行排序
-            sorted_unique_elements = unique_elements[torch.from_numpy(contiguous_array)]
-
-            # 使用sorted_indices获取对应的counts排序
-            sorted_counts = counts[torch.from_numpy(contiguous_array)]
-            
-            for element, count in zip(sorted_unique_elements, sorted_counts):
                 
-                if element.item() != -1 and element.item() != -2:  # 忽略元素为-1的情况
-                    ratio = max(count.item() / positive_pixel[element.item()],count.item()/(crop_size*crop_size))
-                    if ratio > 0.3: #标定crop出来的有没有东西
-                        element_idx = element.item()
-                        flags[i1, i2+2,element_idx+1] = 1
-                        
-                if element.item() == -2:
-                    ratio = count.item() / (crop_size * crop_size)
-                    if ratio > 0.70 and torch.all(flags[i1,i2+2] == 0)  :
-                        element_idx = element.item()
-                        if element.item() == -2:
-                            element_idx = element.item() + 1
-                        flags[i1, i2+2,element_idx+1] = 1
-    #list [ tensor.shape 2 1 3 96 96  ]
-    _crops = torch.chunk(temp_crops, chunks=crop_num, dim=1,)
-    #temp_crops 是一个张量，chunks 是要分割的块数，dim 是要在哪个维度上进行分块操作
-    #b num 3 cs cs -> n * [b, 1, 3, crop_size, crop_size]
-    crops = [c[:, 0] for c in _crops]
-    #这里使用了切片操作 [:, 0] 来选择第一个元素。切片操作 [:, 0] 表示选择所有批量维度的元素，并在截取数目维度上选择索引为0的元素。
-    #crops 里面每个元素是[b, 3, crop_size, crop_size]
-    #list [2 3 96 96]
-    return crops, flags.cuda()
+                
+            else:
+                random_index_x = random.randint(0, h - 1)
+                random_index_y = random.randint(0, h - 1)
+                x_start = random_index_x - crop_size // 2
+                x_end = random_index_x + crop_size // 2
+                y_start = random_index_y - crop_size // 2
+                y_end = random_index_y + crop_size // 2
+                x_start += margin
+                x_end += margin
+                y_start += margin
+                y_end += margin
+            
+            if (x_end-x_start)!=(y_end-y_start):
+                AssertionError("crop_out_margin")
+            
+            crops.append(padded_image[i][:,x_start:x_end,y_start:y_end])
+            flags.append(cls)
+
+
+    return crops, flags
 
 def crop_from_roi_neg(images,cls_label = None, roi_mask=None, crop_num=8, crop_size=96):
     #image 2 3 448 448
@@ -1398,6 +1251,31 @@ def get_per_pic_thre(pesudo_label,gd_label,uncertain_region_thre):
         thre_list.append(temp_thre)
     per_pic_thre = torch.stack(thre_list)
     return per_pic_thre
+
+def get_per_pic_thre_v2(pesudo_label,gd_label,uncertain_region_thre):
+    #pesudo_label [b,h,w]
+    
+    b,h,w = pesudo_label.size()
+    _,c = gd_label.size()
+    flatten_pesudo_label = pesudo_label.view(b,h*w)
+    flatten_pesudo_label = flatten_pesudo_label + 1
+
+    # -1 是确定的背景类 0是uncertain  -> 0是bg区域
+    #elements_list = {}
+    thre_list = []
+    for i in range(b):
+        count_uncertain = torch.where(flatten_pesudo_label[i]==0)
+        count_uncertain = count_uncertain[0].size()[0]
+        flatten_pesudo_label[i][flatten_pesudo_label[i]==-1] = 0        
+        elements,counts = torch.unique(flatten_pesudo_label[i],dim = -1,return_counts = True)
+        thre = counts / (h*w)
+        thre_uncertain = count_uncertain / (h*w)
+        temp_thre = torch.zeros(c+1).cuda()
+        temp_thre[elements.tolist()] = torch.minimum(thre,torch.tensor(0.99))
+        thre_list.append(temp_thre)
+    per_pic_thre = torch.stack(thre_list)
+    return per_pic_thre
+
 
 
 def select_local_patch(pesudo_label):
