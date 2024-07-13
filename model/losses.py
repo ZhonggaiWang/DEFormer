@@ -1112,7 +1112,7 @@ class ContrastLoss_mixbranch(nn.Module):
 
     def forward(self, feature_contrast,another_feature_contrast, cls_label,n_iter):
         #                   [0,20]        [0,19]
-        thre =0.8 - n_iter/8000 * 0.5
+        thre =0.8 - (n_iter-3000)/5000 * 0.5
         
         #能收敛了
         b, _ = feature_contrast.shape
@@ -1150,7 +1150,7 @@ class ContrastLoss_mixbranch(nn.Module):
             
             # positive_similarity = F.cosine_similarity(cls_feature, torch.stack(positive_group).cuda())
             # negative_similarity = torch.stack([torch.dot(cls_feature, negative_pair.cuda()) for negative_pair in negative_group])
-            if (torch.any(negative_similarity > thre) & positive_similarity < 0.5):
+            if (torch.any(negative_similarity > thre) | (positive_similarity < 0.5)):
                 pass
                 #只是取决于更不更新缓冲区，而不是进不进行loss损失
             else:

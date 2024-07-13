@@ -24,7 +24,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--infer_set", default="val", type=str, help="infer_set")
 parser.add_argument("--pooling", default="gmp", type=str, help="pooling method")
 # parser.add_argument("--model_path", default="workdir_voc_final2/2022-11-04-01-50-48-441426/checkpoints/model_iter_20000.pth", type=str, help="model_path")
-parser.add_argument("--model_path", default="/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/2024-07-11-20-07-48-446315/checkpoints/default_model_iter_8000.pth", type=str, help="model_path")
+parser.add_argument("--model_path", default="/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/2024-07-12-20-54-14-111319/checkpoints/default_model_iter_8000.pth", type=str, help="model_path")
 
 parser.add_argument("--backbone", default='vit_base_patch16_224', type=str, help="vit_base_patch16_224")
 parser.add_argument("--data_folder", default='../VOC2012', type=str, help="dataset folder")
@@ -171,7 +171,7 @@ def validate(args=None):
 
 
     trained_state_dict = torch.load(args.model_path, map_location="cpu")
-
+    model.to('cuda:5')
     new_state_dict = OrderedDict()
 
     if 'model' in trained_state_dict:
@@ -186,7 +186,8 @@ def validate(args=None):
     model.load_state_dict(state_dict=new_state_dict, strict=True)
     model.eval()
 
-    seg_score = _validate(model=model.eval_branch('b1'), data_loader=val_loader, args=args)
+
+    seg_score = _validate(model=model.eval_branch('b2'), data_loader=val_loader, args=args)
     torch.cuda.empty_cache()
 
     crf_score = crf_proc()

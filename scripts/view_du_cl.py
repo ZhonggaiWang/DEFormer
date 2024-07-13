@@ -78,7 +78,7 @@ parser.add_argument("--aux_layer", default=-3, type=int, help="aux_layer")
 parser.add_argument("--seed", default=0, type=int, help="fix random seed")
 parser.add_argument("--save_ckpt",default=True, action="store_true", help="save_ckpt")
 
-parser.add_argument("--local-rank", type=int, default=5)
+parser.add_argument("--local-rank", type=int, default=1)
 parser.add_argument("--num_workers", default=10, type=int, help="num_workers")
 parser.add_argument('--backend', default='nccl')
 
@@ -390,8 +390,8 @@ def train(args=None):
         # else:
         #     contrast_loss = torch.tensor(0)
         # TORCH_USE_CUDA_DSA
-        b1_contrast_loss = Contrast_loss(b1_contrast_feature, b2_contrast_feature.detach(),b1_flags)
-        b2_contrast_loss = Contrast_loss(b2_contrast_feature, b1_contrast_feature.detach(),b2_flags)
+        b1_contrast_loss = Contrast_loss(b1_contrast_feature, b2_contrast_feature.detach(),b1_flags,n_iter)
+        b2_contrast_loss = Contrast_loss(b2_contrast_feature, b1_contrast_feature.detach(),b2_flags,n_iter)
         contrast_loss = b1_contrast_loss + b2_contrast_loss
 
          

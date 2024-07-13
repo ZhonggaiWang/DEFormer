@@ -67,12 +67,12 @@ parser.add_argument("--cam_scales", default=(1.0, 0.5, 1.5), help="multi_scales 
 
 parser.add_argument("--w_ptc", default=0.2, type=float, help="w_ptc")
 parser.add_argument("--w_ctc", default=0.45, type=float, help="w_ctc")
-parser.add_argument("--w_seg", default=0.1, type=float, help="w_seg")
+parser.add_argument("--w_seg", default=0.12, type=float, help="w_seg")
 parser.add_argument("--w_reg", default=0.05, type=float, help="w_reg")
 parser.add_argument("--uncertain_region_thre", default=0.2 , type=float, help="uncertain_region_thre")
 parser.add_argument("--t_b1_mix_cam", default=0.7, type=float, help="t_b1_mix_cam")
 parser.add_argument("--t_b2_mix_cam", default=0.5, type=float, help="t_b2_mix_cam")
-parser.add_argument("--w_spacial_bce", default=0.4,type=float, help="w_spacial_bce")
+parser.add_argument("--w_spacial_bce", default=0.45,type=float, help="w_spacial_bce")
 
 parser.add_argument("--temp", default=0.5, type=float, help="temp")
 parser.add_argument("--momentum", default=0.9, type=float, help="temp")
@@ -88,7 +88,7 @@ parser.add_argument('--backend', default='nccl')
 # os.environ['MASTER_ADDR'] = 'localhost'
 # os.environ['MASTER_PORT'] = '5680'
 # os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
-os.environ['CUDA_VISIBLE_DEVICES']='3,4,5'
+os.environ['CUDA_VISIBLE_DEVICES']='0,1,2'
 
 logging.getLogger().setLevel(logging.INFO)
 
@@ -472,7 +472,7 @@ def train(args=None):
         if n_iter <= 2000:
             loss = 1.0 * (b1_cls_loss + b2_cls_loss) + 1.0 * (b1_cls_loss_aux + b2_cls_loss_aux) + args.w_ptc * ptc_loss  + 0.0 * seg_loss + 0.1 * network_sim_loss
         elif n_iter <= 3500:
-            loss = 1.0 * (b1_cls_loss + b2_cls_loss) + 1.0 * (b1_cls_loss_aux + b2_cls_loss_aux) + args.w_ptc * ptc_loss + args.w_seg * seg_loss + 0.1 * network_sim_loss + 0.05 * seg_consistence_loss
+            loss = 1.0 *  (b1_cls_loss + b2_cls_loss) + 1.0 * (b1_cls_loss_aux + b2_cls_loss_aux) + args.w_ptc * ptc_loss + args.w_seg * seg_loss + 0.1 * network_sim_loss + 0.05 * seg_consistence_loss
         else:
             loss = (args.w_spacial_bce * b2_spacial_bce_loss + (1-args.w_spacial_bce) * b2_cls_loss) + 1.0 * b1_cls_loss+ 1.0 * (b1_cls_loss_aux + b2_cls_loss_aux) + args.w_ptc * ptc_loss + args.w_seg * seg_loss + 0.1 * network_sim_loss + 0.05 * seg_consistence_loss
 

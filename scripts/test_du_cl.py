@@ -85,7 +85,7 @@ parser.add_argument('--backend', default='nccl')
 # os.environ['MASTER_ADDR'] = 'localhost'
 # os.environ['MASTER_PORT'] = '5680'
 # os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
-os.environ['CUDA_VISIBLE_DEVICES']='4,5,'
+os.environ['CUDA_VISIBLE_DEVICES']='0,1,2'
 
 logging.getLogger().setLevel(logging.INFO)
 
@@ -239,20 +239,20 @@ def train(args=None):
     )
     
 #pretrained_load——————————————————————————————————————————————————————————————————————————————————————————————————
-    trained_state_dict = torch.load('/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/cl/checkpoints/default_model_iter_8000.pth', map_location="cpu")
-    new_state_dict = OrderedDict()
+    # trained_state_dict = torch.load('/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/cl/checkpoints/default_model_iter_8000.pth', map_location="cpu")
+    # new_state_dict = OrderedDict()
     
-    if 'model' in trained_state_dict:
-        model_state_dict = trained_state_dict['model']
-        for k, v in model_state_dict.items():
-            k = k.replace('module.', '')
-            new_state_dict[k] = v
-    else:
-        for k, v in trained_state_dict.items():
-            k = k.replace('module.', '')
-            new_state_dict[k] = v
+    # if 'model' in trained_state_dict:
+    #     model_state_dict = trained_state_dict['model']
+    #     for k, v in model_state_dict.items():
+    #         k = k.replace('module.', '')
+    #         new_state_dict[k] = v
+    # else:
+    #     for k, v in trained_state_dict.items():
+    #         k = k.replace('module.', '')
+    #         new_state_dict[k] = v
 
-    model.load_state_dict(state_dict=new_state_dict, strict=True)
+    # model.load_state_dict(state_dict=new_state_dict, strict=True)
 
 
 
@@ -382,7 +382,7 @@ def train(args=None):
         #     contrast_loss = b1_contrast_loss + b2_contrast_loss
         # else:
         #     contrast_loss = torch.tensor(0)
-        if n_iter > 2000:
+        if n_iter >= 3000:
             b1_contrast_loss = Contrast_loss(b1_contrast_feature, b2_contrast_feature.detach(),b1_flags, n_iter)
             b2_contrast_loss = Contrast_loss(b2_contrast_feature, b1_contrast_feature.detach(),b2_flags, n_iter)
             contrast_loss = b1_contrast_loss + b2_contrast_loss
@@ -487,8 +487,8 @@ def train(args=None):
 
 #train------------------------------------------------------------------------------------------------------------------------
         if n_iter <= 2000:
-            loss = 1.0 * (b1_cls_loss + b2_cls_loss) + 1.0 * (b1_cls_loss_aux + b2_cls_loss_aux) + args.w_ptc * ptc_loss  + 0.0 * seg_loss + 0.1 * contrast_loss
-        elif n_iter <= 3500:
+            loss = 1.0 * (b1_cls_loss + b2_cls_loss) + 1.0 * (b1_cls_loss_aux + b2_cls_loss_aux) + args.w_ptc * ptc_loss  + 0.0 * seg_loss
+        elif n_iter <= 3000:
             loss = 1.0 *  (b1_cls_loss + b2_cls_loss) + 1.0 * (b1_cls_loss_aux + b2_cls_loss_aux) + args.w_ptc * ptc_loss + args.w_seg * seg_loss + 0.1 * network_sim_loss + 0.1 * contrast_loss
         else:
             loss = (0.4 * b2_spacial_bce_loss + 0.6 * b2_cls_loss) + 1.0 * b1_cls_loss+ 1.0 * (b1_cls_loss_aux + b2_cls_loss_aux) + args.w_ptc * ptc_loss + args.w_seg * seg_loss + 0.1 * network_sim_loss + 0.1 * contrast_loss
