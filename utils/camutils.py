@@ -526,16 +526,7 @@ def cam_to_roi_mask2(cam, cls_label, hig_thre=None, low_thre=None):
     #b h w
         # _pseudo_label += 1
     roi_mask = torch.clone(cam_indecies)
-    # for b in range(valid_cam.shape[0]):
-    #     for channel in range(valid_cam.shape[1]):
-    #         print_cam = valid_cam[b][channel].cpu()
-            
-    #         if torch.sum(print_cam)> 1e-2:
-    #             plt.imshow(print_cam, cmap='jet')
-    #             plt.colorbar()
-    #             plt.title(f'Activation Map - Channel {channel}')
-    #             plt.savefig(f'activation_map_{b}_{channel}.png')
-    #             plt.close()
+
     
     roi_mask[cam_value<=hig_thre] = -1
     roi_mask[cam_value<=low_thre] = -2    #roi区域（uncertainty区域mask设置为1,bg为0，物体区为2）
@@ -571,6 +562,7 @@ def single_class_crop(images,cls_label = None, roi_mask=None, crop_num=1, crop_s
 
     b, c, h, w = images.shape
     
+    box = []
         # 2 8 3 96 96 
     num_class = 20
     flags = []
@@ -611,11 +603,73 @@ def single_class_crop(images,cls_label = None, roi_mask=None, crop_num=1, crop_s
             if (x_end-x_start)!=(y_end-y_start):
                 AssertionError("crop_out_margin")
             
+            box.append((x_start,x_end,y_start,y_end))
             crops.append(padded_image[i][:,x_start:x_end,y_start:y_end])
             flags.append(cls)
 
 
-    return crops, flags
+    return crops, flags, box
+
+
+
+def single_bg_crop(images,cls_label = None, roi_mask=None, crop_num=1, crop_size=64):
+    #image 2 3 448 448
+    crops = []
+    
+    margin = int(crop_size/2)
+    padding = (margin, margin, margin, margin)
+    padded_image = F.pad(images, padding, mode='constant', value=0)
+
+    b, c, h, w = images.shape
+    
+    box = []
+        # 2 8 3 96 96 
+    num_class = 20
+    flags = [0]
+    for i in range(b):
+
+        
+        current_mask = roi_mask[i]
+        
+        #current_mask[current_mask==255] = 0
+        bg_index = torch.where(current_mask == 0)
+
+        if len(bg_index[0]):
+            random_index = random.randint(0, bg_index[0].shape[0] - 1)
+            crop_index_x, crop_index_y = bg_index[0][random_index], bg_index[1][random_index]
+            select_index_x,select_index_y = crop_index_x*16, crop_index_y*16
+            x_start = select_index_x - crop_size // 2
+            x_end = select_index_x + crop_size // 2
+            y_start = select_index_y - crop_size // 2
+            y_end = select_index_y + crop_size // 2
+            x_start += margin
+            x_end += margin
+            y_start += margin
+            y_end += margin
+
+
+            
+            
+        else:
+            random_index_x = random.randint(0, h - 1)
+            random_index_y = random.randint(0, h - 1)
+            x_start = random_index_x - crop_size // 2
+            x_end = random_index_x + crop_size // 2
+            y_start = random_index_y - crop_size // 2
+            y_end = random_index_y + crop_size // 2
+            x_start += margin
+            x_end += margin
+            y_start += margin
+            y_end += margin
+        
+        if (x_end-x_start)!=(y_end-y_start):
+            AssertionError("crop_out_margin")
+        
+        box.append((x_start,x_end,y_start,y_end))
+        crops.append(padded_image[i][:,x_start:x_end,y_start:y_end])
+
+
+    return crops, flags, box
 
 def crop_from_roi_neg(images,cls_label = None, roi_mask=None, crop_num=8, crop_size=96):
     #image 2 3 448 448

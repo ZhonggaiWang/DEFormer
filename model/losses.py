@@ -1112,6 +1112,365 @@ class ContrastLoss_mixbranch(nn.Module):
 
     def forward(self, feature_contrast,another_feature_contrast, cls_label,n_iter):
         #                   [0,20]        [0,19]
+        n_iter = min(n_iter , 6000)
+        # thre_cos_in_group =0.8 - (n_iter-3000)/3000 * 0.5
+        thre_high_posi = (n_iter-3000)/3000 * 0.7
+        thre_low_posi = (n_iter-3000)/3000 * 0.3
+        
+        #能收敛了
+        b, _ = feature_contrast.shape
+        tempreture = 1
+        contrastive_loss = torch.tensor(0)
+        cnt = 0
+        for i in range(b):
+            # bg_feature = feature_contrast[i][0]
+            update = False
+            cls = cls_label[i]
+            cls_feature = feature_contrast[i]
+            
+            buffer_index = cls
+            
+            #positive
+            
+            positive_group = [another_feature_contrast[i]]
+            
+            #negetive 现在是所有与cls不同的不管bg or fg都为negative
+            
+            
+            negetive_in_buffer = [torch.mean(self.feature_contrast[x],dim = 0) for x in range(self.buffer_cls) if x!=buffer_index]              
+            
+            # negetive_in_pic = [feature_fg_contrast[x].detach() for x in cls_index[0] if x.item()!=cls] + [bg_feature.detach()]
+            
+            negative_group = negetive_in_buffer #+ negetive_in_pic
+            
+            
+            #contrast loss and infoNCE
+            # 计算正类pair的相似度
+            positive_similarity = torch.cosine_similarity(cls_feature, torch.stack(positive_group).cuda())
+
+            # 计算负类pair的相似度
+
+            negative_similarity = torch.cat([torch.cosine_similarity(cls_feature, negative_pair.unsqueeze(0).cuda()) for negative_pair in negative_group])
+            
+            # positive_similarity = F.cosine_similarity(cls_feature, torch.stack(positive_group).cuda())
+            # negative_similarity = torch.stack([torch.dot(cls_feature, negative_pair.cuda()) for negative_pair in negative_group])
+            if (positive_similarity < thre_high_posi):
+                pass
+                #只是取决于更不更新缓冲区，而不是进不进行loss损失
+            else:
+                self.feature_contrast[buffer_index, 0] = cls_feature.detach()
+                self.feature_contrast[buffer_index] = torch.roll(self.feature_contrast[buffer_index], shifts=1, dims=0)
+                update = True
+            
+            
+            logits = torch.clamp(torch.abs(torch.cat([positive_similarity, negative_similarity])),min=1e-5,max=1-1e-5)
+
+            # div = torch.sum(torch.exp(logits/tempreture))
+            # head = torch.exp(positive_similarity/tempreture)
+            # prob_logits = torch.div(head , div)
+            # infoNCE_loss = -(torch.log(prob_logits))            
+            # 构建InfoNCE loss
+            targets = torch.cat([torch.ones_like(positive_similarity), torch.zeros_like(negative_similarity)])
+
+            print(update , cls , " with ",logits)
+            infoNCE_loss = F.binary_cross_entropy(logits, targets)
+            if logits[0] < thre_low_posi:
+                print('mis-crop refine')
+                infoNCE_loss = 0
+            
+            contrastive_loss  = contrastive_loss + infoNCE_loss
+
+                
+        
+
+        return contrastive_loss.cuda() / b
+    
+    
+class ContrastLoss_moco(nn.Module):   
+    def __init__(self,temp=1.0,num_cls = 20, buffer_lenth = 368 ,buffer_dim = 1024):
+        super().__init__()
+        self.temp = temp
+        # self.center_momentum = center_momentum
+
+        self.buffer_cls = num_cls 
+        self.buffer_dim = buffer_dim
+        self.buffer_lenth = buffer_lenth
+        self.feature_contrast = torch.zeros(self.buffer_cls,self.buffer_lenth ,self.buffer_dim)
+        # self.is_used_tag = torch.zeros(self.buffer_cls,self.buffer_lenth)
+
+
+    def forward(self, feature_contrast,another_feature_contrast, cls_label,n_iter):
+        #                   [0,20]        [0,19]
+        n_iter = min(n_iter , 6000)
+        # thre_cos_in_group =0.8 - (n_iter-3000)/3000 * 0.5
+        thre_high_posi = (n_iter-3000)/3000 * 0.7
+        thre_low_posi = (n_iter-3000)/3000 * 0.3
+        
+        #能收敛了
+        b, _ = feature_contrast.shape
+        tempreture = 1
+        contrastive_loss = torch.tensor(0)
+        cnt = 0
+        for i in range(b):
+            # bg_feature = feature_contrast[i][0]
+            update = False
+            cls = cls_label[i]
+            cls_feature = feature_contrast[i]
+            
+            buffer_index = cls
+            
+            #positive
+            
+            positive_group = [another_feature_contrast[i]]
+            
+            #negetive 现在是所有与cls不同的不管bg or fg都为negative
+            import random
+            random_idx = random.sample(range(0, self.buffer_lenth-1), 20)
+
+            negetive_in_buffer = [self.feature_contrast[x][random_idx[x]].cuda() for x in range(self.buffer_cls) if x!=buffer_index]              
+            
+            # negetive_in_pic = [feature_fg_contrast[x].detach() for x in cls_index[0] if x.item()!=cls] + [bg_feature.detach()]
+            
+            negative_group = negetive_in_buffer #+ negetive_in_pic
+            
+            
+            #contrast loss and infoNCE
+            # 计算正类pair的相似度
+            positive_similarity = torch.abs(torch.cosine_similarity(cls_feature, torch.stack(positive_group).cuda()))
+
+            # 计算负类pair的相似度
+
+            negative_similarity = torch.cat([torch.cosine_similarity(cls_feature, negative_pair.unsqueeze(0).cuda()) for negative_pair in negative_group])
+            
+            # positive_similarity = F.cosine_similarity(cls_feature, torch.stack(positive_group).cuda())
+            # negative_similarity = torch.stack([torch.dot(cls_feature, negative_pair.cuda()) for negative_pair in negative_group])
+            if (positive_similarity < thre_high_posi):
+                pass
+                #只是取决于更不更新缓冲区，而不是进不进行loss损失
+            else:
+                self.feature_contrast[buffer_index, 0] = cls_feature.detach()
+                self.feature_contrast[buffer_index] = torch.roll(self.feature_contrast[buffer_index], shifts=1, dims=0)
+                update = True
+            
+            
+            logits = torch.clamp(torch.abs(torch.cat([positive_similarity, negative_similarity])),min=1e-5,max=1-1e-5)
+
+            # div = torch.sum(torch.exp(logits/tempreture))
+            # head = torch.exp(positive_similarity/tempreture)
+            # prob_logits = torch.div(head , div)
+            # infoNCE_loss = -(torch.log(prob_logits))            
+            # 构建InfoNCE loss
+            targets = torch.cat([torch.ones_like(positive_similarity), torch.zeros_like(negative_similarity)])
+
+            print(update , cls , " with ",logits)
+            infoNCE_loss = F.binary_cross_entropy(logits, targets)
+            if logits[0] < thre_low_posi:
+                print('mis-crop refine')
+                infoNCE_loss = 0
+            
+            contrastive_loss  = contrastive_loss + infoNCE_loss
+
+                
+        
+
+        return contrastive_loss.cuda() / b
+    
+class ContrastLoss_prototype(nn.Module):   
+    def __init__(self,temp=1.0,num_cls = 20, buffer_lenth = 368 ,buffer_dim = 1024):
+        super().__init__()
+        self.temp = temp
+        # self.center_momentum = center_momentum
+
+        self.buffer_cls = num_cls 
+        self.buffer_dim = buffer_dim
+        self.buffer_lenth = buffer_lenth
+        self.feature_contrast = torch.zeros(self.buffer_cls,self.buffer_dim)
+        # self.is_used_tag = torch.zeros(self.buffer_cls,self.buffer_lenth)
+
+
+    def forward(self, feature_contrast,another_feature_contrast, cls_label,n_iter):
+        #                   [0,20]        [0,19]
+        n_iter = min(n_iter , 6000)
+        # thre_cos_in_group =0.8 - (n_iter-3000)/3000 * 0.5
+        thre_high_posi = (n_iter-3000)/3000 * 0.7
+        thre_low_posi = (n_iter-3000)/3000 * 0.4
+        
+        #能收敛了
+        b, _ = feature_contrast.shape
+        tempreture = 1
+        contrastive_loss = torch.tensor(0)
+        cnt = 0
+        for i in range(b):
+            # bg_feature = feature_contrast[i][0]
+            update = False
+            cls = cls_label[i]
+            cls_feature = feature_contrast[i]
+            
+            buffer_index = cls
+            
+
+            #positive
+            
+            positive_similarity = F.cosine_similarity(cls_feature , self.feature_contrast[buffer_index].unsqueeze(0).cuda())
+            
+            # if (abs(positive_similarity) + 0.05 >= thre_high_posi):
+            self.feature_contrast[buffer_index] = 0.9 * self.feature_contrast[buffer_index].cuda() + 0.1 * cls_feature.detach()
+
+        
+            
+
+            negetive_in_buffer = [self.feature_contrast[x].cuda() for x in range(self.buffer_cls) if x!=buffer_index]              
+            negetive_item = torch.stack(negetive_in_buffer)
+            negative_similarity = F.cosine_similarity(cls_feature, negetive_item)
+
+            
+            
+            logits = torch.clamp(torch.abs(torch.cat([positive_similarity, negative_similarity])),min=1e-5,max=1-1e-5)
+
+            # div = torch.sum(torch.exp(logits/tempreture))
+            # head = torch.exp(positive_similarity/tempreture)
+            # prob_logits = torch.div(head , div)
+            # infoNCE_loss = -(torch.log(prob_logits))            
+            # 构建InfoNCE loss
+            targets = torch.cat([torch.ones_like(positive_similarity), torch.zeros_like(negative_similarity)])
+
+            print(update , cls , " with ",logits)
+            infoNCE_loss = F.multilabel_soft_margin_loss(logits, targets)
+            # if logits[0] < thre_low_posi:
+            #     print('mis-crop refine')
+            #     infoNCE_loss = 0
+            #     self.feature_contrast[buffer_index] = 0.99 * self.feature_contrast[buffer_index].cuda() - 0.01 * cls_feature.detach()
+            
+            contrastive_loss  = contrastive_loss + infoNCE_loss
+
+                
+        
+
+        return contrastive_loss.cuda() / b    
+
+    
+    
+    
+    
+class ContrastLoss_single_branch(nn.Module):   
+    def __init__(self,temp=1.0,num_cls = 20, buffer_lenth = 256 ,buffer_dim = 1024):
+        super().__init__()
+        self.temp = temp
+        # self.center_momentum = center_momentum
+
+        self.buffer_cls = num_cls 
+        self.buffer_dim = buffer_dim
+        self.buffer_lenth = buffer_lenth
+        self.feature_contrast = torch.zeros(self.buffer_cls,self.buffer_lenth ,self.buffer_dim)
+        # self.is_used_tag = torch.zeros(self.buffer_cls,self.buffer_lenth)
+
+
+    def forward(self, feature_contrast_raw, cls_label,n_iter):
+        #                   [0,20]        [0,19]
+        n_iter = min(n_iter , 6000)
+        # thre_cos_in_group =0.8 - (n_iter-3000)/3000 * 0.5
+        thre_high_posi = (n_iter-3000)/3000 * 0.7
+        thre_low_posi = (n_iter-3000)/3000 * 0.3
+        num_list = len(cls_label)
+        
+        feature_contrast = feature_contrast_raw[:num_list,:]
+        another_feature_contrast = feature_contrast_raw[num_list:,:].detach()
+        
+        #能收敛了
+        b, _ = feature_contrast.shape
+        tempreture = 1
+        contrastive_loss = torch.tensor(0)
+        cnt = 0
+        for i in range(b):
+            # bg_feature = feature_contrast[i][0]
+            update = False
+            cls = cls_label[i]
+            cls_feature = feature_contrast[i]
+            
+            buffer_index = cls
+            
+            #positive
+            
+            positive_group = [another_feature_contrast[i]]
+            
+            #negetive 现在是所有与cls不同的不管bg or fg都为negative
+            import random
+            random_idx = random.sample(range(0, self.buffer_lenth-1), 20)
+
+            negetive_in_buffer = [self.feature_contrast[x][random_idx[x]].cuda() for x in range(self.buffer_cls) if x!=buffer_index]              
+            
+            # negetive_in_pic = [feature_fg_contrast[x].detach() for x in cls_index[0] if x.item()!=cls] + [bg_feature.detach()]
+            
+            negative_group = negetive_in_buffer #+ negetive_in_pic
+            
+            
+            #contrast loss and infoNCE
+            # 计算正类pair的相似度
+            positive_similarity = torch.abs(torch.cosine_similarity(cls_feature, torch.stack(positive_group).cuda()))
+
+            # 计算负类pair的相似度
+
+            negative_similarity = torch.cat([torch.cosine_similarity(cls_feature, negative_pair.unsqueeze(0).cuda()) for negative_pair in negative_group])
+            
+            # positive_similarity = F.cosine_similarity(cls_feature, torch.stack(positive_group).cuda())
+            # negative_similarity = torch.stack([torch.dot(cls_feature, negative_pair.cuda()) for negative_pair in negative_group])
+            if (positive_similarity < 0.7):
+                pass
+                #只是取决于更不更新缓冲区，而不是进不进行loss损失
+            else:
+                self.feature_contrast[buffer_index, 0] = cls_feature.detach()
+                self.feature_contrast[buffer_index] = torch.roll(self.feature_contrast[buffer_index], shifts=1, dims=0)
+                update = True
+            
+            
+            logits = torch.clamp(torch.abs(torch.cat([positive_similarity, negative_similarity])),min=1e-5,max=1-1e-5)
+
+            # div = torch.sum(torch.exp(logits/tempreture))
+            # head = torch.exp(positive_similarity/tempreture)
+            # prob_logits = torch.div(head , div)
+            # infoNCE_loss = -(torch.log(prob_logits))            
+            # 构建InfoNCE loss
+            targets = torch.cat([torch.ones_like(positive_similarity), torch.zeros_like(negative_similarity)])
+
+            print(update , cls , " with ",logits)
+            infoNCE_loss = F.binary_cross_entropy(logits, targets)
+            if logits[0] < 0.5:
+                print('mis-crop refine')
+                infoNCE_loss = 0
+            
+            contrastive_loss  = contrastive_loss + infoNCE_loss
+
+                
+        
+
+        return contrastive_loss.cuda() / b
+
+
+    
+
+    
+    
+    
+    
+    
+    
+    
+    
+class ContrastLoss_mixbranch_bug(nn.Module):   
+    def __init__(self,temp=1.0,num_cls = 20, buffer_lenth = 368 ,buffer_dim = 1024):
+        super().__init__()
+        self.temp = temp
+        # self.center_momentum = center_momentum
+
+        self.buffer_cls = num_cls 
+        self.buffer_dim = buffer_dim
+        self.buffer_lenth = buffer_lenth
+        self.feature_contrast = torch.zeros(self.buffer_cls,self.buffer_lenth ,self.buffer_dim)
+        # self.is_used_tag = torch.zeros(self.buffer_cls,self.buffer_lenth)
+
+
+    def forward(self, feature_contrast,another_feature_contrast, cls_label,n_iter):
+        #                   [0,20]        [0,19]
         thre =0.8 - (n_iter-3000)/5000 * 0.5
         
         #能收敛了
@@ -1180,3 +1539,19 @@ class ContrastLoss_mixbranch(nn.Module):
         
 
         return contrastive_loss.cuda() / b
+    
+    
+def get_bg_contrastive_loss(global_cls_token, local_cls_token,num_crop):
+    b ,_ = global_cls_token.shape               #2b,dim
+    b1_local_cls_token = local_cls_token[:b*num_crop,:]
+    b2_local_cls_token = local_cls_token[b*num_crop:,:]
+    contrastive_loss = torch.tensor(0)
+    for i in range(b):
+        b1_current_token = b1_local_cls_token[i*num_crop:(i+1)*num_crop,:]
+        b2_current_token = b2_local_cls_token[i*num_crop:(i+1)*num_crop,:]
+        current_token = torch.cat((b1_current_token,b2_current_token),dim=0)
+        loss = -torch.log(1- torch.mean(abs(F.cosine_similarity(global_cls_token[i],current_token))))
+        contrastive_loss = contrastive_loss + loss
+    
+    return contrastive_loss/b
+        

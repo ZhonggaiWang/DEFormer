@@ -16,9 +16,9 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 from datasets import voc as voc
-from model.losses import get_masked_ptc_loss, get_seg_loss, CTCLoss_neg, DenseEnergyLoss, get_energy_loss,CPCLoss,get_spacial_bce_loss,get_seg_consistence_loss
+from model.losses import get_masked_ptc_loss, get_seg_loss, CTCLoss_neg, DenseEnergyLoss, get_energy_loss,CPCLoss,get_spacial_bce_loss,ContrastLoss_mixbranch,get_seg_consistence_loss
 from model.model_seg_neg import network
-from model.double_seg_head import network_du_heads_independent_config
+from model.model_final_seg import network_du_heads_independent_config_cl
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
@@ -70,9 +70,6 @@ parser.add_argument("--w_ctc", default=0.45, type=float, help="w_ctc")
 parser.add_argument("--w_seg", default=0.1, type=float, help="w_seg")
 parser.add_argument("--w_reg", default=0.05, type=float, help="w_reg")
 parser.add_argument("--uncertain_region_thre", default=0.2 , type=float, help="uncertain_region_thre")
-parser.add_argument("--t_b1_mix_cam", default=0.7, type=float, help="t_b1_mix_cam")
-parser.add_argument("--t_b2_mix_cam", default=0.5, type=float, help="t_b2_mix_cam")
-parser.add_argument("--w_spacial_bce", default=0.4,type=float, help="w_spacial_bce")
 
 parser.add_argument("--temp", default=0.5, type=float, help="temp")
 parser.add_argument("--momentum", default=0.9, type=float, help="temp")
@@ -233,7 +230,7 @@ def train(args=None):
 
     device = torch.device(args.local_rank)
 
-    model = network_du_heads_independent_config(
+    model = network_du_heads_independent_config_cl(
         backbone=args.backbone,
         num_classes=args.num_classes,
         pretrained=False,
@@ -242,8 +239,7 @@ def train(args=None):
     )
     
 #pretrained_load——————————————————————————————————————————————————————————————————————————————————————————————————
-    # CPC_loss = CPCLoss().cuda()
-    # trained_state_dict = torch.load('/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/baseline/checkpoints/default_model_iter_10000.pth', map_location="cpu")
+    # trained_state_dict = torch.load('/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/2024-07-13-11-17-18-575853/checkpoints/default_model_iter_4000.pth', map_location="cpu")
     # new_state_dict = OrderedDict()
     
     # if 'model' in trained_state_dict:
@@ -256,9 +252,7 @@ def train(args=None):
     #         k = k.replace('module.', '')
     #         new_state_dict[k] = v
 
-    # model.load_state_dict(state_dict=new_state_dict, strict=False)
-    # # if 'CPC_loss' in trained_state_dict:
-    # #     CPC_loss = trained_state_dict['CPC_loss']
+    # model.load_state_dict(state_dict=new_state_dict, strict=True)
 
 
 
@@ -312,11 +306,10 @@ def train(args=None):
     avg_meter = AverageMeter()
 
 
-    # loss_layer = DenseEnergyLoss(weight=1e-7, sigma_rgb=15, sigma_xy=100, scale_factor=0.5)
-    ncrops = 10
-    CTC_loss = CTCLoss_neg(ncrops=ncrops, temp=args.temp).cuda()
+    # Contrast_loss = ContrastLoss_mixbranch()
     
     par = PAR(num_iter=10, dilations=[1,2,4,8,12,24]).cuda()
+    
 
     for n_iter in range(args.max_iters):
 
@@ -346,38 +339,33 @@ def train(args=None):
         # b2_roi_mask = cam_to_roi_mask2(b2_cams.detach(), cls_label=cls_label, low_thre=args.low_thre, hig_thre=args.high_thre)
         # # #b h w
 
-        # /local_crops, flags= single_class_crop(images=inputs, cls_label = cls_label,roi_mask=roi_mask, crop_num=ncrops-2, crop_size=args.local_crop_size)
+        # local_crops, flags= single_class_crop(images=inputs, cls_label = cls_label,roi_mask=roi_mask, crop_num=ncrops-2, crop_size=args.local_crop_size)
         # roi_crops = crops[:2] + local_crops #全局的两张图 + local的多张图
-
 
         
 # model forward-------------------------------------------------------------------------------------------------------------------------------
 
-        cls, segs, fmap, cls_aux, cam_12th, cls_token = model(inputs, crops='#', n_iter=n_iter,select_k = 1,return_cam = True)    
+        cls, segs, fmap, cls_aux, cam_12th, cls_token= model(inputs,crops='#', return_cls_token = True)    
+        
         b1_cls, b2_cls = cls[0], cls[1]
         b1_segs, b2_segs = segs[0], segs[1]
         b1_fmap, b2_fmap = fmap[0], fmap[1]
         b1_cls_aux, b2_cls_aux = cls_aux[0], cls_aux[1]
         b1_cam_12th, b2_cam_12th = cam_12th[0], cam_12th[1]
         b1_cls_token, b2_cls_token = cls_token[0], cls_token[1]        
-        
+
+                 
+               
 # discrepancy loss ----------------------------------------------------------------
-
-        # fmap_1_flat = b1_fmap.view(b1_fmap.shape[0], b1_fmap.shape[1], -1)
-        # fmap_2_flat = b2_fmap.view(b2_fmap.shape[0], b2_fmap.shape[1], -1)
-
-        # cross_network_cos_simi = torch.nn.CosineSimilarity(dim=-1, eps=1e-6)
-        # b1_sim_loss = 1 + torch.abs(cross_network_cos_simi(fmap_1_flat.detach(), fmap_2_flat).mean())
-        # b2_sim_loss = 1 + torch.abs(cross_network_cos_simi(fmap_2_flat.detach(), fmap_1_flat).mean())
 
         cross_network_cos_simi = torch.nn.CosineSimilarity(dim=-1, eps=1e-6)
         b1_sim_loss = 1 - torch.abs(cross_network_cos_simi(b1_cls_token.detach(), b2_cls_token).mean())
         b2_sim_loss = 1 - torch.abs(cross_network_cos_simi(b2_cls_token.detach(), b1_cls_token).mean())
         
         network_sim_loss = b1_sim_loss + b2_sim_loss
-        # network_sim_loss = torch.tensor(0)
 
-# branch2 : spacial-bce + cls loss part-------------------------------------------------------------------------------------------------------------------
+
+# branch2 : adaptive-label-bce + cls loss part-------------------------------------------------------------------------------------------------------------------
 
 
         # valid_aux_cam, _ = cam_to_label(cams_aux.detach(), cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=args.bkg_thre, high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index)
@@ -390,15 +378,6 @@ def train(args=None):
         b2_cls_loss_aux = F.multilabel_soft_margin_loss(b2_cls_aux, cls_label)
 
 
-    
-#show mask --------------------------------------------------------------------------------------------------------------
-        # from PIL import Image, ImageOps
-        # show_mask(aux_pesedo_show,cls_label,args.low_thre,args.high_thre)    
-        # show_mask_cam(b1_cams,cls_label,args.low_thre,args.high_thre)
-        # input_image = TF.to_pil_image(image_origin[0].permute(2,0,1))
-        # input_image.save('input_image.png')
-
-        
 # branch1 : cls-loss-------------------------------------------------------------------------------------------------------------------
         b1_cls_loss = F.multilabel_soft_margin_loss(b1_cls, cls_label)
         b1_cls_loss_aux = F.multilabel_soft_margin_loss(b1_cls_aux, cls_label)
@@ -410,16 +389,11 @@ def train(args=None):
 #——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
         cpc_loss = torch.tensor(0)
         ctc_loss = torch.tensor(0)
-        # ctc_loss crop出来的结果过网络得cls，计算loss
-        # ctc_loss = CTC_loss(out_s, out_t, flags,cls_label)
 
 
-  
-
-
-        
+            
 #b1 b2 generate pesudo-label and seg------------------------------------------------------------------------------------------------------------------------------------------
-        b1_mix_cams = args.t_b1_mix_cam * b1_cams.detach() + (1-args.t_b1_mix_cam) * b2_cams.detach()
+        b1_mix_cams = 0.7 * b1_cams.detach() + 0.3 * b2_cams.detach()
         b1_valid_cam, _ = cam_to_label(b1_mix_cams.detach(), cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=args.bkg_thre, high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index)
         b1_refined_pseudo_label = refine_cams_with_bkg_v2(par, inputs_denorm, cams=b1_valid_cam, cls_labels=cls_label,  high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index, img_box=img_box, )
         b2_segs = F.interpolate(b2_segs, size=b1_refined_pseudo_label.shape[1:], mode='bilinear', align_corners=False)
@@ -427,7 +401,7 @@ def train(args=None):
         b2_seg_loss = get_seg_loss(b2_segs, b1_refined_pseudo_label.type(torch.long), ignore_index=args.ignore_index)
         #cross head
         
-        b2_mix_cams = args.t_b2_mix_cam * b2_cams.detach() + (1-args.t_b2_mix_cam) * b1_cams.detach()
+        b2_mix_cams = 0.5 * b2_cams.detach() + 0.5 * b1_cams.detach()
         b2_valid_cam, _ = cam_to_label(b2_mix_cams.detach(), cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=args.bkg_thre, high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index)
         b2_refined_pseudo_label = refine_cams_with_bkg_v2(par, inputs_denorm, cams=b2_valid_cam, cls_labels=cls_label,  high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index, img_box=img_box, )
         b1_segs = F.interpolate(b1_segs, size=b2_refined_pseudo_label.shape[1:], mode='bilinear', align_corners=False)
@@ -435,16 +409,6 @@ def train(args=None):
         b1_seg_loss = get_seg_loss(b1_segs, b2_refined_pseudo_label.type(torch.long), ignore_index=args.ignore_index)
         
         seg_loss = b1_seg_loss + b2_seg_loss
-    
-#seg_result_consistence_loss--------------------------------------------------------------------------------
-        b1_seg_consistence_loss = get_seg_consistence_loss(b1_segs,b2_segs.detach())
-        b2_seg_consistence_loss = get_seg_consistence_loss(b2_segs,b1_segs.detach())
-        
-        seg_consistence_loss = 0.5 * b1_seg_consistence_loss + 0.5 * b2_seg_consistence_loss
-      
-
-    
-
         
 
         
@@ -468,13 +432,15 @@ def train(args=None):
 
         # print(n_iter)
 
+        contrast_loss = torch.tensor(0)
+        
 #train------------------------------------------------------------------------------------------------------------------------
         if n_iter <= 2000:
-            loss = 1.0 * (b1_cls_loss + b2_cls_loss) + 1.0 * (b1_cls_loss_aux + b2_cls_loss_aux) + args.w_ptc * ptc_loss  + 0.0 * seg_loss + 0.1 * network_sim_loss
-        elif n_iter <= 3500:
-            loss = 1.0 *  (b1_cls_loss + b2_cls_loss) + 1.0 * (b1_cls_loss_aux + b2_cls_loss_aux) + args.w_ptc * ptc_loss + args.w_seg * seg_loss + 0.1 * network_sim_loss + 0.05 * seg_consistence_loss
+            loss = 1.0 * (b1_cls_loss + b2_cls_loss) + 1.0 * (b1_cls_loss_aux + b2_cls_loss_aux) + args.w_ptc * ptc_loss  + 0.0 * seg_loss
+        elif n_iter <= 3000:
+            loss = 1.0 *  (b1_cls_loss + b2_cls_loss) + 1.0 * (b1_cls_loss_aux + b2_cls_loss_aux) + args.w_ptc * ptc_loss + args.w_seg * seg_loss + 0.1 * network_sim_loss 
         else:
-            loss = (args.w_spacial_bce * b2_spacial_bce_loss + (1-args.w_spacial_bce) * b2_cls_loss) + 1.0 * b1_cls_loss+ 1.0 * (b1_cls_loss_aux + b2_cls_loss_aux) + args.w_ptc * ptc_loss + args.w_seg * seg_loss + 0.1 * network_sim_loss + 0.05 * seg_consistence_loss
+            loss = (0.4 * b2_spacial_bce_loss + 0.6 * b2_cls_loss) + 1.0 * b1_cls_loss+ 1.0 * (b1_cls_loss_aux + b2_cls_loss_aux) + args.w_ptc * ptc_loss + args.w_seg * seg_loss + 0.1 * network_sim_loss 
 
         # 如果你增加了 cls_loss 的权重值，使其在整体优化中起到更大的作用，那么模型在训练过程中会更加关注优化 cls_loss
         cls_pred = (b1_cls > 0).type(torch.int16)
@@ -486,12 +452,15 @@ def train(args=None):
 
         avg_meter.add({
             'cls_loss': cls_loss.item(),
+            'ptc_loss': ptc_loss.item(),
+            'aur_loss': ctc_loss.item(),
             'cls_loss_aux': cls_loss_aux.item(),
             'seg_loss': seg_loss.item(),
             'cls_score': cls_score.item(),
+            'dcc_loss': cpc_loss.item(),
             'spacial_bce_loss' :spacial_bce_loss.item(),
             'network_sim_loss': network_sim_loss.item(),
-            'seg_sim_loss': seg_consistence_loss.item(),
+            'contrast_loss':contrast_loss.item()
         })
 
         optim.zero_grad()
@@ -510,7 +479,7 @@ def train(args=None):
                 cur_lr = optim.param_groups[0]['lr']
 
 
-                logging.info("Iter: %d; Elasped: %s; ETA: %s; LR: %.3e; cls_loss: %.4f, cls_loss_aux: %.4f,  spacial_bce_loss: %.4f...,network_sim_loss: %.4f..., seg_sim_loss: %.4f... " % (n_iter + 1, delta, eta, cur_lr, avg_meter.pop('cls_loss'), avg_meter.pop('cls_loss_aux'),avg_meter.pop('spacial_bce_loss'),avg_meter.pop('network_sim_loss'),avg_meter.pop('seg_sim_loss')))
+                logging.info("Iter: %d; Elasped: %s; ETA: %s; LR: %.3e; cls_loss: %.4f, cls_loss_aux: %.4f, ptc_loss: %.4f, spacial_bce_loss: %.4f..., network_sim_loss: %.4f... , CL: %.4f... " % (n_iter + 1, delta, eta, cur_lr, avg_meter.pop('cls_loss'), avg_meter.pop('cls_loss_aux'), avg_meter.pop('ptc_loss'), avg_meter.pop('spacial_bce_loss'),avg_meter.pop('network_sim_loss'),avg_meter.pop('contrast_loss')))
 
         if (n_iter + 1) % 2000 == 0:
             # ckpt_name = os.path.join(args.ckpt_dir, "w/oPSA_model_iter_%d.pth" % (n_iter + 1))
