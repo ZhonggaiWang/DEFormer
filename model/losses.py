@@ -1542,6 +1542,8 @@ class ContrastLoss_mixbranch_bug(nn.Module):
     
     
 def get_bg_contrastive_loss(global_cls_token, local_cls_token,num_crop):
+    #local cls token dual branch
+    
     b ,_ = global_cls_token.shape               #2b,dim
     b1_local_cls_token = local_cls_token[:b*num_crop,:]
     b2_local_cls_token = local_cls_token[b*num_crop:,:]
@@ -1550,8 +1552,37 @@ def get_bg_contrastive_loss(global_cls_token, local_cls_token,num_crop):
         b1_current_token = b1_local_cls_token[i*num_crop:(i+1)*num_crop,:]
         b2_current_token = b2_local_cls_token[i*num_crop:(i+1)*num_crop,:]
         current_token = torch.cat((b1_current_token,b2_current_token),dim=0)
-        loss = -torch.log(1- torch.mean(abs(F.cosine_similarity(global_cls_token[i],current_token))))
+        loss = -torch.log(torch.clamp(1- torch.mean(abs(F.cosine_similarity(global_cls_token[i],current_token))),torch.tensor(1e-2).cuda(),torch.tensor(1-1e-2).cuda()))
+        contrastive_loss = contrastive_loss + loss
+    
+    return contrastive_loss/b
+
+def get_bg_fg_contrastive_loss(global_cls_token, local_cls_token,num_crop):
+    #local_cls_token single branch
+    
+    b ,_ = global_cls_token.shape               #2b,dim
+    contrastive_loss = torch.tensor(0)
+    for i in range(b):
+        current_token = local_cls_token[i*2*num_crop:2*(i+1)*num_crop,:]
+        targets = torch.tensor([1.0,0.0]*num_crop)
+        logits = abs(F.cosine_similarity(global_cls_token[i],current_token))
+        
+        loss = F.binary_cross_entropy(logits,targets.cuda())
         contrastive_loss = contrastive_loss + loss
     
     return contrastive_loss/b
         
+def get_bg_fg_contrastive_clamp_loss(global_cls_token, local_cls_token,num_crop):
+    #local_cls_token single branch
+    
+    b ,_ = global_cls_token.shape               #2b,dim
+    contrastive_loss = torch.tensor(0)
+    for i in range(b):
+        current_token = local_cls_token[i*2*num_crop:2*(i+1)*num_crop,:]
+        targets = torch.tensor([1.0,0.0]*num_crop)
+        logits = torch.clamp(torch.abs(F.cosine_similarity(global_cls_token[i],current_token)),torch.tensor(1e-3).cuda(),torch.tenosr(1-1e-3).cuda()) 
+        
+        loss = F.binary_cross_entropy(logits,targets.cuda())
+        contrastive_loss = contrastive_loss + loss
+    
+    return contrastive_loss/b

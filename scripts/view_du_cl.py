@@ -16,7 +16,7 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 from datasets import voc as voc
-from model.losses import get_masked_ptc_loss, get_seg_loss, ContrastLoss_mixbranch, DenseEnergyLoss, get_energy_loss,CPCLoss,get_spacial_bce_loss
+from model.losses import get_masked_ptc_loss, get_seg_loss, ContrastLoss_single_branch, DenseEnergyLoss, get_energy_loss,CPCLoss,get_spacial_bce_loss,ContrastLoss_moco,ContrastLoss_prototype,get_bg_fg_contrastive_loss
 from model.model_seg_neg import network
 from model.double_seg_head import network_du_heads_independent_config_cl
 from torch.nn.parallel import DistributedDataParallel
@@ -25,7 +25,7 @@ from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 from model.PAR import PAR
 from utils import evaluate, imutils, optimizer
-from utils.camutils import single_class_crop,cam_to_label, cam_to_roi_mask2, multi_scale_cam2, label_to_aff_mask, refine_cams_with_bkg_v2,cam_to_label_resized,get_per_pic_thre,multi_scale_cam2_du_heads,select_local_patch
+from utils.camutils import single_bg_fg_crop,cam_to_label, cam_to_roi_mask2, multi_scale_cam2, label_to_aff_mask, refine_cams_with_bkg_v2,cam_to_label_resized,get_per_pic_thre,multi_scale_cam2_du_heads,select_local_patch
 from utils.pyutils import AverageMeter, cal_eta, format_tabs, setup_logger
 torch.hub.set_dir("./pretrained")
 parser = argparse.ArgumentParser()
@@ -245,7 +245,7 @@ def train(args=None):
     
 #pretrained_load——————————————————————————————————————————————————————————————————————————————————————————————————
     # CPC_loss = CPCLoss().cuda()
-    trained_state_dict = torch.load('/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/cl/checkpoints/default_model_iter_8000.pth', map_location="cpu")
+    trained_state_dict = torch.load('/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/74.6CL_bg/checkpoints/default_model_iter_8000.pth', map_location="cpu")
     new_state_dict = OrderedDict()
     
     if 'model' in trained_state_dict:
@@ -313,7 +313,14 @@ def train(args=None):
     train_loader_iter = iter(train_loader)
     avg_meter = AverageMeter()
 
-    Contrast_loss = ContrastLoss_mixbranch()
+
+
+
+
+    Contrast_loss_b1 = ContrastLoss_prototype()
+    Contrast_loss_b2 = ContrastLoss_prototype()
+    
+    
     n_crops = 10
     par = PAR(num_iter=10, dilations=[1,2,4,8,12,24]).cuda()
     
@@ -343,8 +350,7 @@ def train(args=None):
         
         #改动cam_aux
 
-        # b2_roi_mask = cam_to_roi_mask2(b2_cams.detach(), cls_label=cls_label, low_thre=args.low_thre, hig_thre=args.high_thre)
-        # # #b h w
+      # # #b h w
 
         
         # roi_crops = crops[:2] + local_crops #全局的两张图 + local的多张图
@@ -353,9 +359,14 @@ def train(args=None):
         b1_28x_cam = F.interpolate(b1_cams.detach(), size=(28,28), mode="bilinear", align_corners=False)
         b2_28x_cam = F.interpolate(b2_cams.detach(), size=(28,28), mode="bilinear", align_corners=False)
         
+        
+        # b1_28x_pseudo_label = cam_to_roi_mask2(b1_28x_cam.detach(), cls_label=cls_label, low_thre=args.low_thre, hig_thre=args.high_thre)
+        # b2_28x_pseudo_label = cam_to_roi_mask2(b2_28x_cam.detach(), cls_label=cls_label, low_thre=args.low_thre, hig_thre=args.high_thre)
+  
+        
         _,b1_28x_pseudo_label = cam_to_label_resized(b1_28x_cam.detach(), cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=args.bkg_thre, high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index,printornot=False,clip = False)
         _,b2_28x_pseudo_label = cam_to_label_resized(b2_28x_cam.detach(), cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=args.bkg_thre, high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index,printornot=False,clip = False)
-       #pesudo_label,然后要根据pesudo label选块 [b, H, W]
+        #    pesudo_label,然后要根据pesudo label选块 [b, H, W]
         # b1_seleted_patch_list = select_local_patch(b1_28x_pesudo_label)
         # show_mask(b1_28x_pesudo_label[0])
         # b2_seleted_patch_list = select_local_patch(b2_28x_pesudo_label)        
@@ -364,10 +375,10 @@ def train(args=None):
 
 #get_local_pic_to_encode------------------------------------------------------------------------------
 
-        b1_local_crops, b1_flags= single_class_crop(images=inputs, cls_label = cls_label,roi_mask=b1_28x_pseudo_label, crop_num=n_crops-2, crop_size=args.local_crop_size)
-        b2_local_crops, b2_flags= single_class_crop(images=inputs, cls_label = cls_label,roi_mask=b2_28x_pseudo_label, crop_num=n_crops-2, crop_size=args.local_crop_size)
-        local_pic = (b1_local_crops, b2_local_crops)
-        
+        b1_local_crops, b1_flags, b1_box= single_bg_fg_crop(images=inputs, cls_label = cls_label,roi_mask=b1_28x_pseudo_label, crop_num=2, crop_size=args.local_crop_size)
+        b2_local_crops, b2_flags, b2_box= single_bg_fg_crop(images=inputs, cls_label = cls_label,roi_mask=b2_28x_pseudo_label, crop_num=2, crop_size=args.local_crop_size)
+        local_pic = (b1_local_crops , b2_local_crops)
+
         
 # model forward-------------------------------------------------------------------------------------------------------------------------------
 
@@ -390,10 +401,13 @@ def train(args=None):
         # else:
         #     contrast_loss = torch.tensor(0)
         # TORCH_USE_CUDA_DSA
-        b1_contrast_loss = Contrast_loss(b1_contrast_feature, b2_contrast_feature.detach(),b1_flags,n_iter)
-        b2_contrast_loss = Contrast_loss(b2_contrast_feature, b1_contrast_feature.detach(),b2_flags,n_iter)
-        contrast_loss = b1_contrast_loss + b2_contrast_loss
-
+        # b1_contrast_loss = Contrast_loss_b1(b1_contrast_feature,b2_contrast_feature.detach(),b1_flags,n_iter + 3000)
+        # b2_contrast_loss = Contrast_loss_b2(b2_contrast_feature,b1_contrast_feature.detach(),b2_flags,n_iter + 3000)
+        # contrast_loss = b1_contrast_loss + b2_contrast_loss
+        b1_bg_contrast_loss = get_bg_fg_contrastive_loss(b1_cls_token.detach(),b1_contrast_feature,num_crop=2) 
+        b2_bg_contrast_loss = get_bg_fg_contrastive_loss(b2_cls_token.detach(),b2_contrast_feature,num_crop=2) 
+        contrast_loss = b1_bg_contrast_loss + b2_bg_contrast_loss
+        print(contrast_loss)
          
                
 # discrepancy loss ----------------------------------------------------------------
@@ -475,21 +489,30 @@ def train(args=None):
         
         
 #show mask --------------------------------------------------------------------------------------------------------------
-        # from PIL import Image, ImageOps
-        # show_mask_cam(b1_cams,cls_label,args.low_thre,args.high_thre, 'b1_cam')
-        # show_mask_cam(b2_cams,cls_label,args.low_thre,args.high_thre, 'b2_cam')
-        # show_mask_cam(b1_mix_cam,cls_label,args.low_thre,args.high_thre, 'b1_mix_cam')
-        # show_mask_cam(b2_mix_cam,cls_label,args.low_thre,args.high_thre, 'b2_mix_cam')
-        # show_mask_cam(b1_cams_aux,cls_label,args.low_thre,args.high_thre, 'b1_cam_aux')
-        # show_mask_cam(b2_cams_aux,cls_label,args.low_thre,args.high_thre, 'b2_cam_aux')
-        # input_image = TF.to_pil_image(inputs[0])
-        # input_image.save('input_image.png')
-        # crop_image = TF.to_pil_image(b1_local_crops[0])
-        # crop_image.save('crop_image_1.png')
-        # crop_image = TF.to_pil_image(b2_local_crops[0])
-        # crop_image.save('crop_image_2.png')
-        # show_seg(b1_segs,cls_label,args.low_thre,args.high_thre, 'b1_seg')
-        # show_seg(b2_segs,cls_label,args.low_thre,args.high_thre, 'b2_seg')        
+        from PIL import Image, ImageOps
+        show_mask_cam(b1_cams,cls_label,args.low_thre,args.high_thre, 'b1_cam')
+        show_mask_cam(b2_cams,cls_label,args.low_thre,args.high_thre, 'b2_cam')
+        show_mask_cam(b1_mix_cam,cls_label,args.low_thre,args.high_thre, 'b1_mix_cam')
+        show_mask_cam(b2_mix_cam,cls_label,args.low_thre,args.high_thre, 'b2_mix_cam')
+        show_mask_cam(b1_cams_aux,cls_label,args.low_thre,args.high_thre, 'b1_cam_aux')
+        show_mask_cam(b2_cams_aux,cls_label,args.low_thre,args.high_thre, 'b2_cam_aux')
+        input_image = TF.to_pil_image(inputs_denorm[0])
+        input_image.save('input_image.png')
+        
+        for i in range(len(b1_box)):
+            new_box = []
+            for item in b1_box[i]:
+                item = max(item - 48,0)
+                item = int(item)
+                new_box.append(item)
+        
+            b1_crop_image = inputs_denorm[0,:,new_box[0]:new_box[1],new_box[2]:new_box[3]]
+            crop_image = TF.to_pil_image(b1_crop_image)
+            crop_image.save('crop_image_' + str(i) + '.png')
+
+
+        show_seg(b1_segs,cls_label,args.low_thre,args.high_thre, 'b1_seg')
+        show_seg(b2_segs,cls_label,args.low_thre,args.high_thre, 'b2_seg')        
 
         
         
@@ -514,7 +537,7 @@ def train(args=None):
 
 #train------------------------------------------------------------------------------------------------------------------------
         if n_iter <= 2000:
-            loss = 1.0 * (b1_cls_loss + b2_cls_loss) + 1.0 * (b1_cls_loss_aux + b2_cls_loss_aux) + args.w_ptc * ptc_loss  + 0.0 * seg_loss + 0.1 * network_sim_loss + 0.05 * contrast_loss
+            loss = 1.0 * (b1_cls_loss + b2_cls_loss) + 1.0 * (b1_cls_loss_aux + b2_cls_loss_aux) + args.w_ptc * ptc_loss  + 0.0 * seg_loss + 0.1 * network_sim_loss + 0.1 * contrast_loss
         elif n_iter <= 3500:
             loss = 1.0 *  (b1_cls_loss + b2_cls_loss) + 1.0 * (b1_cls_loss_aux + b2_cls_loss_aux) + args.w_ptc * ptc_loss + args.w_seg * seg_loss + 0.1 * network_sim_loss + 0.05 * contrast_loss
         else:

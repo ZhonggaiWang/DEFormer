@@ -16,7 +16,7 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 from datasets import voc as voc
-from model.losses import get_masked_ptc_loss, get_seg_loss, CTCLoss_neg, DenseEnergyLoss, get_energy_loss,CPCLoss,get_spacial_bce_loss,ContrastLoss_moco,ContrastLoss_prototype,get_bg_contrastive_loss
+from model.losses import get_masked_ptc_loss, get_seg_loss, CTCLoss_neg, DenseEnergyLoss, get_energy_loss,CPCLoss,get_spacial_bce_loss,ContrastLoss_moco,ContrastLoss_prototype,get_bg_fg_contrastive_loss
 from model.model_seg_neg import network
 from model.double_seg_head import network_du_heads_independent_config_cl
 from torch.nn.parallel import DistributedDataParallel
@@ -25,7 +25,7 @@ from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 from model.PAR import PAR
 from utils import evaluate, imutils, optimizer
-from utils.camutils import single_bg_crop,single_class_crop,cam_to_label, cam_to_roi_mask2, multi_scale_cam2, label_to_aff_mask, refine_cams_with_bkg_v2,cam_to_label_resized,get_per_pic_thre,multi_scale_cam2_du_heads
+from utils.camutils import single_bg_fg_crop,single_class_crop,cam_to_label, cam_to_roi_mask2, multi_scale_cam2, label_to_aff_mask, refine_cams_with_bkg_v2,cam_to_label_resized,get_per_pic_thre,multi_scale_cam2_du_heads
 from utils.pyutils import AverageMeter, cal_eta, format_tabs, setup_logger
 torch.hub.set_dir("./pretrained")
 parser = argparse.ArgumentParser()
@@ -85,7 +85,7 @@ parser.add_argument('--backend', default='nccl')
 # os.environ['MASTER_ADDR'] = 'localhost'
 # os.environ['MASTER_PORT'] = '5680'
 # os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
-os.environ['CUDA_VISIBLE_DEVICES']='0,1,2'
+os.environ['CUDA_VISIBLE_DEVICES']='3,4,5'
 
 logging.getLogger().setLevel(logging.INFO)
 
@@ -239,7 +239,7 @@ def train(args=None):
     )
     
 #pretrained_load——————————————————————————————————————————————————————————————————————————————————————————————————
-    # trained_state_dict = torch.load('/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/74.9(without seg_simi)/checkpoints/default_model_iter_8000.pth', map_location="cpu")
+    # trained_state_dict = torch.load('/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/2024-07-15-23-55-10-403364/checkpoints/default_model_iter_8000.pth', map_location="cpu")
     # new_state_dict = OrderedDict()
     
     # if 'model' in trained_state_dict:
@@ -355,10 +355,11 @@ def train(args=None):
         _28x_pseudo_label = (b1_28x_pseudo_label, b2_28x_pseudo_label)
 
 #get_local_pic_to_encode------------------------------------------------------------------------------
-        n_crops =10
-        b1_local_crops, b1_flags, b1_box= single_bg_crop(images=inputs, cls_label = cls_label,roi_mask=b1_28x_pseudo_label, crop_num=n_crops-2, crop_size=args.local_crop_size)
-        b2_local_crops, b2_flags, b2_box= single_bg_crop(images=inputs, cls_label = cls_label,roi_mask=b2_28x_pseudo_label, crop_num=n_crops-2, crop_size=args.local_crop_size)
-        local_pic = (b1_local_crops + b2_local_crops, b2_local_crops+b1_local_crops)
+        
+        n_crops =2
+        b1_local_crops, b1_flags, b1_box= single_bg_fg_crop(images=inputs, cls_label = cls_label,roi_mask=b1_28x_pseudo_label, crop_num=n_crops, crop_size=args.local_crop_size)
+        b2_local_crops, b2_flags, b2_box= single_bg_fg_crop(images=inputs, cls_label = cls_label,roi_mask=b2_28x_pseudo_label, crop_num=n_crops, crop_size=args.local_crop_size)
+        local_pic = (b1_local_crops, b2_local_crops)
 
         
 # model forward-------------------------------------------------------------------------------------------------------------------------------
@@ -382,9 +383,10 @@ def train(args=None):
         # else:
         #     contrast_loss = torch.tensor(0)
         if n_iter >= 3000:
-            b1_bg_contrast_loss = get_bg_contrastive_loss(b1_cls_token.detach(),b1_contrast_feature,num_crop=1) 
-            b2_bg_contrast_loss = get_bg_contrastive_loss(b2_cls_token.detach(),b2_contrast_feature,num_crop=1) 
+            b1_bg_contrast_loss = get_bg_fg_contrastive_loss(b1_cls_token.detach(),b1_contrast_feature,num_crop=n_crops) 
+            b2_bg_contrast_loss = get_bg_fg_contrastive_loss(b2_cls_token.detach(),b2_contrast_feature,num_crop=n_crops) 
             contrast_loss = b1_bg_contrast_loss + b2_bg_contrast_loss
+            print("Contrast",contrast_loss) 
         else:
             contrast_loss = torch.tensor(0)
 
