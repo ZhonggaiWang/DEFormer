@@ -521,7 +521,7 @@ def cam_to_roi_mask2(cam, cls_label, hig_thre=None, low_thre=None):
     cls_label_rep = cls_label.unsqueeze(-1).unsqueeze(-1).repeat([1,1,h,w])
     #(b,c) -> (b, c, 1, 1) -> (b,c,h,w)
     valid_cam = cls_label_rep * cam + cls_label_rep * 1e-8
-    #表明哪些需要验证
+    #只有fg了现在是
     cam_value, cam_indecies = valid_cam.max(dim=1, keepdim=False)
     #b h w
         # _pseudo_label += 1
@@ -628,48 +628,705 @@ def single_bg_crop(images,cls_label = None, roi_mask=None, crop_num=1, crop_size
     flags = [0]
     for i in range(b):
 
-        
-        current_mask = roi_mask[i]
-        
-        #current_mask[current_mask==255] = 0
-        bg_index = torch.where(current_mask == 0)
-
-        if len(bg_index[0]):
-            random_index = random.randint(0, bg_index[0].shape[0] - 1)
-            crop_index_x, crop_index_y = bg_index[0][random_index], bg_index[1][random_index]
-            select_index_x,select_index_y = crop_index_x*16, crop_index_y*16
-            x_start = select_index_x - crop_size // 2
-            x_end = select_index_x + crop_size // 2
-            y_start = select_index_y - crop_size // 2
-            y_end = select_index_y + crop_size // 2
-            x_start += margin
-            x_end += margin
-            y_start += margin
-            y_end += margin
-
-
+        for j in range(crop_num):
+            current_mask = roi_mask[i]
             
+            #current_mask[current_mask==255] = 0
+            bg_index = torch.where(current_mask == 0)
+
+            if len(bg_index[0]):
+                random_index = random.randint(0, bg_index[0].shape[0] - 1)
+                crop_index_x, crop_index_y = bg_index[0][random_index], bg_index[1][random_index]
+                select_index_x,select_index_y = crop_index_x*16, crop_index_y*16
+                x_start = select_index_x - crop_size // 2
+                x_end = select_index_x + crop_size // 2
+                y_start = select_index_y - crop_size // 2
+                y_end = select_index_y + crop_size // 2
+                x_start += margin
+                x_end += margin
+                y_start += margin
+                y_end += margin
+
+
+                
+                
+            else:
+                random_index_x = random.randint(0, h - 1)
+                random_index_y = random.randint(0, h - 1)
+                x_start = random_index_x - crop_size // 2
+                x_end = random_index_x + crop_size // 2
+                y_start = random_index_y - crop_size // 2
+                y_end = random_index_y + crop_size // 2
+                x_start += margin
+                x_end += margin
+                y_start += margin
+                y_end += margin
             
-        else:
-            random_index_x = random.randint(0, h - 1)
-            random_index_y = random.randint(0, h - 1)
-            x_start = random_index_x - crop_size // 2
-            x_end = random_index_x + crop_size // 2
-            y_start = random_index_y - crop_size // 2
-            y_end = random_index_y + crop_size // 2
-            x_start += margin
-            x_end += margin
-            y_start += margin
-            y_end += margin
-        
-        if (x_end-x_start)!=(y_end-y_start):
-            AssertionError("crop_out_margin")
-        
-        box.append((x_start,x_end,y_start,y_end))
-        crops.append(padded_image[i][:,x_start:x_end,y_start:y_end])
+            if (x_end-x_start)!=(y_end-y_start):
+                AssertionError("crop_out_margin")
+            
+            box.append((x_start,x_end,y_start,y_end))
+            crops.append(padded_image[i][:,x_start:x_end,y_start:y_end])
 
 
     return crops, flags, box
+
+def single_bg_fg_crop(images,cls_label = None, roi_mask=None, crop_num=1, crop_size=64):
+    #image 2 3 448 448
+    crops = []
+    
+    margin = int(crop_size/2)
+    padding = (margin, margin, margin, margin)
+    padded_image = F.pad(images, padding, mode='constant', value=0)
+
+    b, c, h, w = images.shape
+    
+    box = []
+        # 2 8 3 96 96 
+    num_class = 20
+    flags = []
+    for i in range(b):
+        for j in range(crop_num):
+            current_mask = roi_mask[i]
+            cls_index = torch.where(cls_label[i] == 1)
+            cls = random.sample(cls_index[0].tolist(),1)[0]
+            
+            fg_index = torch.where(current_mask == cls+1)
+            bg_index = torch.where(current_mask == 0)
+            
+            
+            if len(fg_index[0]):
+                random_index = random.randint(0, fg_index[0].shape[0] - 1)
+                crop_index_x, crop_index_y = fg_index[0][random_index], fg_index[1][random_index]
+                select_index_x,select_index_y = crop_index_x*16, crop_index_y*16
+                x_start = select_index_x - crop_size // 2
+                x_end = select_index_x + crop_size // 2
+                y_start = select_index_y - crop_size // 2
+                y_end = select_index_y + crop_size // 2
+                x_start += margin
+                x_end += margin
+                y_start += margin
+                y_end += margin
+            else:
+                random_index_x = random.randint(0, h - 1)
+                random_index_y = random.randint(0, h - 1)
+                x_start = random_index_x - crop_size // 2
+                x_end = random_index_x + crop_size // 2
+                y_start = random_index_y - crop_size // 2
+                y_end = random_index_y + crop_size // 2
+                x_start += margin
+                x_end += margin
+                y_start += margin
+                y_end += margin
+            
+            if (x_end-x_start)!=(y_end-y_start):
+                AssertionError("crop_out_margin")
+            
+            box.append((x_start,x_end,y_start,y_end))
+            crops.append(padded_image[i][:,x_start:x_end,y_start:y_end])
+            flags.append(cls+1)
+            
+            
+            # denoise strategy is important to improve performance
+            if len(bg_index[0]):
+                random_index = random.randint(0, bg_index[0].shape[0] - 1)
+                crop_index_x, crop_index_y = bg_index[0][random_index], bg_index[1][random_index]
+                select_index_x,select_index_y = crop_index_x*16, crop_index_y*16
+                x_start = select_index_x - crop_size // 2
+                x_end = select_index_x + crop_size // 2
+                y_start = select_index_y - crop_size // 2
+                y_end = select_index_y + crop_size // 2
+                x_start += margin
+                x_end += margin
+                y_start += margin
+                y_end += margin
+            else:
+                random_index_x = random.randint(0, h - 1)
+                random_index_y = random.randint(0, h - 1)
+                x_start = random_index_x - crop_size // 2
+                x_end = random_index_x + crop_size // 2
+                y_start = random_index_y - crop_size // 2
+                y_end = random_index_y + crop_size // 2
+                x_start += margin
+                x_end += margin
+                y_start += margin
+                y_end += margin
+            
+            if (x_end-x_start)!=(y_end-y_start):
+                AssertionError("crop_out_margin")
+            
+            
+            box.append((x_start,x_end,y_start,y_end))
+            crops.append(padded_image[i][:,x_start:x_end,y_start:y_end])
+            flags.append(0)
+
+    return crops, flags, box
+
+def single_bg_fg_crop_denoise(images,cls_label = None, roi_mask_28x=None, crop_num=1, crop_size=64, roi_mask= None):
+    #image 2 3 448 448
+    #roi mask 28 28
+    crops = []
+    
+    margin = int(crop_size/2)
+    padding = (margin, margin, margin, margin)
+    padded_image = F.pad(images, padding, mode='constant', value=0)
+
+    b, c, h, w = images.shape
+    denoise_thre = 0.35
+    
+    box = []
+        # 2 8 3 96 96 
+    num_class = 20
+    flags = []
+    
+    for i in range(b):
+        for j in range(crop_num):
+            current_mask = roi_mask_28x[i]
+            cls_index = torch.where(cls_label[i] == 1)
+            cls = random.sample(cls_index[0].tolist(),1)[0]
+            
+            fg_index = torch.where(current_mask == cls+1)
+            bg_index = torch.where(current_mask == 0)
+            
+            uncertain_remove = roi_mask[i].clone()
+            for_denoise_mask = torch.where(uncertain_remove>=0, torch.tensor(1).cuda(),torch.tensor(0).cuda()) 
+            padded_denoise_mask = F.pad(for_denoise_mask, padding, mode='constant', value=0)
+            
+            if len(fg_index[0]):
+                random_index = random.randint(0, fg_index[0].shape[0] - 1)
+                crop_index_x, crop_index_y = fg_index[0][random_index], fg_index[1][random_index]
+                select_index_x,select_index_y = crop_index_x*16, crop_index_y*16
+                x_start = select_index_x - crop_size // 2
+                x_end = select_index_x + crop_size // 2
+                y_start = select_index_y - crop_size // 2
+                y_end = select_index_y + crop_size // 2
+                x_start += margin
+                x_end += margin
+                y_start += margin
+                y_end += margin
+            else:
+                random_index_x = random.randint(0, h - 1)
+                random_index_y = random.randint(0, h - 1)
+                x_start = random_index_x - crop_size // 2
+                x_end = random_index_x + crop_size // 2
+                y_start = random_index_y - crop_size // 2
+                y_end = random_index_y + crop_size // 2
+                x_start += margin
+                x_end += margin
+                y_start += margin
+                y_end += margin
+            
+            if (x_end-x_start)!=(y_end-y_start):
+                AssertionError("crop_out_margin")
+            
+            box.append((x_start,x_end,y_start,y_end))
+            crops.append(padded_image[i][:,x_start:x_end,y_start:y_end])
+            flags.append(cls+1)
+            
+            
+            # denoise strategy is important to maintain stability
+            if len(bg_index[0]):
+                random_index = random.randint(0, bg_index[0].shape[0] - 1)
+                crop_index_x, crop_index_y = bg_index[0][random_index], bg_index[1][random_index]
+                select_index_x,select_index_y = crop_index_x*16, crop_index_y*16
+                x_start = select_index_x - crop_size // 2
+                x_end = select_index_x + crop_size // 2
+                y_start = select_index_y - crop_size // 2
+                y_end = select_index_y + crop_size // 2
+                x_start += margin
+                x_end += margin
+                y_start += margin
+                y_end += margin
+            else:
+                random_index_x = random.randint(0, h - 1)
+                random_index_y = random.randint(0, h - 1)
+                x_start = random_index_x - crop_size // 2
+                x_end = random_index_x + crop_size // 2
+                y_start = random_index_y - crop_size // 2
+                y_end = random_index_y + crop_size // 2
+                x_start += margin
+                x_end += margin
+                y_start += margin
+                y_end += margin
+            
+            if (x_end-x_start)!=(y_end-y_start):
+                AssertionError("crop_out_margin")
+            
+            crop_mask = padded_denoise_mask[x_start:x_end, y_start:y_end]
+            
+            # plt.imshow(crop_mask.cpu(), cmap='jet', vmin=0, vmax=1)
+            # plt.colorbar()
+            # plt.title("crop" + "mask")
+            
+            # plt.savefig('output-image'+ "/" +f'mask' + str(j) + '.png')
+            # plt.close()
+            
+            posi_count = torch.sum(crop_mask == 1)
+            if (posi_count / (crop_size*crop_size)) > denoise_thre:
+                crops.append(torch.zeros((3,crop_size,crop_size)))
+                box.append((x_start,x_end,y_start,y_end))
+                flags.append(0)
+            else:
+                box.append((x_start,x_end,y_start,y_end))
+                crops.append(padded_image[i][:,x_start:x_end,y_start:y_end])
+                flags.append(0)
+                        
+            # crop_img = crops[-1]
+            # crop_img = TF.to_pil_image(crop_img)
+            # crop_img.save('crop_img_in_block_fg_crop.png')
+
+
+
+    return crops, flags, box
+
+def single_bg_fg_crop_denoise_v2(images,cls_label = None, roi_mask_28x=None, crop_num=1, crop_size=64, roi_mask= None):
+    #image 2 3 448 448
+    #roi_mask 448 448 
+    crops = []
+    
+    margin = int(crop_size/2)
+    padding = (margin, margin, margin, margin)
+    padded_image = F.pad(images, padding, mode='constant', value=0)
+
+    b, c, h, w = images.shape
+    denoise_thre = 0.15
+    
+    box = []
+        # 2 8 3 96 96 
+    num_class = 20
+    flags = []
+    #roi middle crop 
+
+    for i in range(b):
+        for j in range(crop_num):
+            current_mask = roi_mask_28x[i]
+            cls_index = torch.where(cls_label[i] == 1)
+            cls = random.sample(cls_index[0].tolist(),1)[0]
+            
+            fg_index = torch.where(current_mask == cls)
+            bg_index = torch.where(current_mask == -2)
+            
+            uncertain_remove = roi_mask[i].clone()
+            #roi mask 448 * 448
+            for_denoise_mask = torch.where(uncertain_remove>=0, torch.tensor(1).cuda(),torch.tensor(0).cuda()) 
+            padded_denoise_mask = F.pad(for_denoise_mask, padding, mode='constant', value=0)
+            
+            if len(fg_index[0]):
+                random_index = random.randint(0, fg_index[0].shape[0] - 1)
+                crop_index_x, crop_index_y = fg_index[0][random_index], fg_index[1][random_index]
+                select_index_x,select_index_y = crop_index_x, crop_index_y
+                x_start = select_index_x - crop_size // 2
+                x_end = select_index_x + crop_size // 2
+                y_start = select_index_y - crop_size // 2
+                y_end = select_index_y + crop_size // 2
+                x_start += margin
+                x_end += margin
+                y_start += margin
+                y_end += margin
+            else:
+                random_index_x = random.randint(0, h - 1)
+                random_index_y = random.randint(0, h - 1)
+                x_start = random_index_x - crop_size // 2
+                x_end = random_index_x + crop_size // 2
+                y_start = random_index_y - crop_size // 2
+                y_end = random_index_y + crop_size // 2
+                x_start += margin
+                x_end += margin
+                y_start += margin
+                y_end += margin
+            
+            if (x_end-x_start)!=(y_end-y_start):
+                AssertionError("crop_out_margin")
+            
+            box.append((x_start,x_end,y_start,y_end))
+            crops.append(padded_image[i][:,x_start:x_end,y_start:y_end])
+            flags.append(cls+1)
+            
+            # crop_img = crops[-1]
+            # crop_img = TF.to_pil_image(crop_img)
+            # crop_img.save('crop_img_in_block_fg_crop.png')
+
+            
+            # denoise strategy is important to maintain stability
+            if len(bg_index[0]):
+                random_index = random.randint(0, bg_index[0].shape[0] - 1)
+                crop_index_x, crop_index_y = bg_index[0][random_index], bg_index[1][random_index]
+                select_index_x,select_index_y = crop_index_x, crop_index_y
+                x_start = select_index_x - crop_size // 2
+                x_end = select_index_x + crop_size // 2
+                y_start = select_index_y - crop_size // 2
+                y_end = select_index_y + crop_size // 2
+                x_start += margin
+                x_end += margin
+                y_start += margin
+                y_end += margin
+            else:
+                random_index_x = random.randint(0, h - 1)
+                random_index_y = random.randint(0, h - 1)
+                x_start = random_index_x - crop_size // 2
+                x_end = random_index_x + crop_size // 2
+                y_start = random_index_y - crop_size // 2
+                y_end = random_index_y + crop_size // 2
+                x_start += margin
+                x_end += margin
+                y_start += margin
+                y_end += margin
+            
+            if (x_end-x_start)!=(y_end-y_start):
+                AssertionError("crop_out_margin")
+            
+            crop_mask = padded_denoise_mask[x_start:x_end, y_start:y_end]
+            
+            # plt.imshow(crop_mask.cpu(), cmap='jet', vmin=0, vmax=1)
+            # plt.colorbar()
+            # plt.title("crop" + "mask")
+            
+            # plt.savefig('output-image'+ "/" +f'mask' + str(j) + '.png')
+            # plt.close()
+            
+            posi_count = torch.sum(crop_mask == 1)
+            if (posi_count / (crop_size*crop_size)) > denoise_thre:
+                crops.append(torch.zeros((3,crop_size,crop_size)))
+                box.append((x_start,x_end,y_start,y_end))
+                flags.append(0)
+            else:
+                box.append((x_start,x_end,y_start,y_end))
+                crops.append(padded_image[i][:,x_start:x_end,y_start:y_end])
+                flags.append(0)
+                        
+            # crop_img = crops[-1]
+            # crop_img = TF.to_pil_image(crop_img)
+            # crop_img.save('crop_img_in_block_fg_crop.png')
+
+
+
+    return crops, flags, box
+
+def single_bg_fg_crop_denoise_v3(images,cls_label = None, roi_mask_28x=None, crop_num=1, crop_size=64, roi_mask= None):
+    #image 2 3 448 448
+    #roi_mask 448 448 
+    crops = []
+    
+    margin = int(crop_size/2)
+    padding = (margin, margin, margin, margin)
+    # padded_image = F.pad(images, padding, mode='constant', value=0)
+
+    b, c, h, w = images.shape
+    denoise_thre = 0.10
+    
+    box = []
+        # 2 8 3 96 96 
+    num_class = 20
+    flags = []
+    #roi middle crop 
+
+    for i in range(b):
+        for j in range(crop_num):
+            current_mask = roi_mask_28x[i][margin:h-margin, margin:w-margin]
+            cls_index = torch.where(cls_label[i] == 1)
+            cls = random.sample(cls_index[0].tolist(),1)[0]
+            
+            fg_index = torch.where(current_mask == cls)
+            bg_index = torch.where(current_mask == -2)
+            
+            uncertain_remove = roi_mask[i].clone()
+            #roi mask 448 * 448
+            for_denoise_mask = torch.where(uncertain_remove>=0, torch.tensor(1).cuda(),torch.tensor(0).cuda()) 
+    
+            
+            if len(fg_index[0]):
+                random_index = random.randint(0, fg_index[0].shape[0] - 1)
+                crop_index_x, crop_index_y = fg_index[0][random_index], fg_index[1][random_index]
+                select_index_x,select_index_y = crop_index_x, crop_index_y
+                x_start = select_index_x - crop_size // 2
+                x_end = select_index_x + crop_size // 2
+                y_start = select_index_y - crop_size // 2
+                y_end = select_index_y + crop_size // 2
+                x_start += margin
+                x_end += margin
+                y_start += margin
+                y_end += margin
+            else:
+                random_index_x = random.randint(margin, h - margin)
+                random_index_y = random.randint(margin, h - margin)
+                x_start = random_index_x - crop_size // 2
+                x_end = random_index_x + crop_size // 2
+                y_start = random_index_y - crop_size // 2
+                y_end = random_index_y + crop_size // 2
+
+            
+            if (x_end-x_start)!=(y_end-y_start):
+                AssertionError("crop_out_margin")
+            
+            box.append((x_start,x_end,y_start,y_end))
+            crops.append(images[i][:,x_start:x_end,y_start:y_end])
+            flags.append(cls+1)
+            
+            # crop_img = crops[-1]
+            # crop_img = TF.to_pil_image(crop_img)
+            # crop_img.save('crop_img_in_block_fg_crop.png')
+
+            
+            # denoise strategy is important to maintain stability
+            if len(bg_index[0]):
+                random_index = random.randint(0, bg_index[0].shape[0] - 1)
+                crop_index_x, crop_index_y = bg_index[0][random_index], bg_index[1][random_index]
+                select_index_x,select_index_y = crop_index_x, crop_index_y
+                x_start = select_index_x - crop_size // 2
+                x_end = select_index_x + crop_size // 2
+                y_start = select_index_y - crop_size // 2
+                y_end = select_index_y + crop_size // 2
+                x_start += margin
+                x_end += margin
+                y_start += margin
+                y_end += margin
+            else:
+                random_index_x = random.randint(margin, h - margin)
+                random_index_y = random.randint(margin, h - margin)
+                x_start = random_index_x - crop_size // 2
+                x_end = random_index_x + crop_size // 2
+                y_start = random_index_y - crop_size // 2
+                y_end = random_index_y + crop_size // 2
+  
+            
+            if (x_end-x_start)!=(y_end-y_start):
+                AssertionError("crop_out_margin")
+            
+            crop_mask = for_denoise_mask[x_start:x_end, y_start:y_end]
+            
+            # plt.imshow(crop_mask.cpu(), cmap='jet', vmin=0, vmax=1)
+            # plt.colorbar()
+            # plt.title("crop" + "mask")
+            # plt.savefig('output-image'+ "/" +f'mask' + str(j) + '.png')
+            # plt.close()
+            
+            posi_count = torch.sum(crop_mask == 1)
+            if (posi_count / (crop_size*crop_size)) > denoise_thre:
+                crops.append(torch.zeros((3,crop_size,crop_size)))
+                box.append((x_start,x_end,y_start,y_end))
+                flags.append(0)
+            else:
+                box.append((x_start,x_end,y_start,y_end))
+                crops.append(images[i][:,x_start:x_end,y_start:y_end])
+                flags.append(0)
+                        
+            # crop_img = crops[-1]
+            # crop_img = TF.to_pil_image(crop_img)
+            # crop_img.save('crop_img_in_block_fg_crop.png')
+
+
+
+    return crops, flags, box
+
+
+def single_instance_crop(images,cls_label = None, roi_mask_28x=None, crop_num=1, crop_size=64, roi_mask= None):
+    #image 2 3 448 448
+    #roi_mask 448 448 
+    crops = []
+    
+    margin = int(crop_size/2)
+    padding = (margin, margin, margin, margin)
+    # padded_image = F.pad(images, padding, mode='constant', value=0)
+
+    b, c, h, w = images.shape
+    denoise_thre = 0.10
+    
+    box = []
+        # 2 8 3 96 96 
+    num_class = 20
+    flags = []
+    #roi middle crop 
+
+    for i in range(b):
+        for j in range(crop_num):
+            current_mask = roi_mask[i]
+            cls_index = torch.unique(current_mask)
+            cls_index = cls_index.tolist()
+            cls_index = [x for x in cls_index if x>=0]
+            if len(cls_index):
+                cls = random.sample(cls_index,1)[0]
+            else:
+                cls_index = torch.where(cls_label[i] == 1)
+                cls = random.sample(cls_index[0].tolist(),1)[0]
+            
+            crop_idx = current_mask == cls 
+            crop_uncertain = current_mask == -1
+            crop_idx = crop_idx | crop_uncertain
+            crop_image = torch.zeros((3,h,w)).cuda()
+            
+            crop_image[:,crop_idx] = images[i][:,crop_idx]
+            
+            crops.append(crop_image)
+            flags.append(cls+1)
+        
+
+
+
+
+    return crops, flags, box
+
+
+
+
+def single_fg_crop_28x(images,cls_label = None, roi_mask_28x=None, crop_num=1, crop_size=64, roi_mask= None):
+    #image 2 3 448 448
+    #roi_mask 448 448 
+    crops = []
+    
+    crop_size_28x = 5
+
+
+    b, h, w = roi_mask_28x.shape
+    
+    box = []
+        # 2 8 3 96 96 
+    num_class = 20
+    flags = []
+    #roi middle crop 
+
+    for i in range(b):
+        for j in range(crop_num):
+            current_mask = roi_mask_28x[i]
+            cls_index = torch.where(cls_label[i] == 1)
+            cls = random.sample(cls_index[0].tolist(),1)[0]
+            
+            fg_index = torch.where(current_mask == cls)
+            
+            
+            if len(fg_index[0]):
+                random_index = random.randint(0, fg_index[0].shape[0] - 1)
+                crop_index_x, crop_index_y = fg_index[0][random_index], fg_index[1][random_index]
+                select_index_x,select_index_y = crop_index_x, crop_index_y
+                x_start = select_index_x - crop_size_28x // 2
+                x_end = select_index_x + crop_size_28x // 2
+                y_start = select_index_y - crop_size_28x // 2
+                y_end = select_index_y + crop_size_28x // 2
+
+            else:
+                random_index_x = random.randint(0, h - 1)
+                random_index_y = random.randint(0, h - 1)
+                select_index_x,select_index_y = random_index_x,random_index_y
+                x_start = select_index_x - crop_size_28x // 2
+                x_end = select_index_x + crop_size_28x // 2
+                y_start = select_index_y - crop_size_28x // 2
+                y_end = select_index_y + crop_size_28x // 2
+                
+            if (x_end-x_start)!=(y_end-y_start):
+                AssertionError("crop_out_margin")
+            
+            x_end = min(x_end,28)
+            y_end = min(y_end,28)
+            x_start = max(x_start,0)
+            y_start = max(x_start,0)
+            
+            box.append((x_start,x_end,y_start,y_end))
+            flags.append(cls+1)
+            
+
+    return crops, flags, box
+
+
+
+
+def single_class_fg_crop_mosaic(images,cls_label = None, roi_mask_28x=None, crop_num=1, crop_size=64, roi_mask= None):
+    #image 2 3 448 448
+    #roi_mask 448 448 
+    crops = []
+    mosaic_crops = []
+    margin = int(crop_size/2)
+    padding = (margin, margin, margin, margin)
+    padded_image = F.pad(images, padding, mode='constant', value=0)
+
+    b, c, h, w = images.shape
+    denoise_thre = 0.10
+    
+    box = []
+        # 2 8 3 96 96 
+    num_class = 20
+    flags = []
+    #roi middle crop 
+
+    for i in range(b):
+        cls_index = torch.where(cls_label[i] == 1)
+        cls = random.sample(cls_index[0].tolist(),1)[0]
+        for j in range(crop_num):
+            current_mask = roi_mask_28x[i]
+
+            
+            fg_index = torch.where(current_mask == cls)
+            bg_index = torch.where(current_mask == -2)
+            
+            uncertain_remove = roi_mask[i].clone()
+            #roi mask 448 * 448
+            for_denoise_mask = torch.where(uncertain_remove>=0, torch.tensor(1).cuda(),torch.tensor(0).cuda()) 
+            padded_denoise_mask = F.pad(for_denoise_mask, padding, mode='constant', value=0)
+            
+            if len(fg_index[0]):
+                random_index = random.randint(0, fg_index[0].shape[0] - 1)
+                crop_index_x, crop_index_y = fg_index[0][random_index], fg_index[1][random_index]
+                select_index_x,select_index_y = crop_index_x, crop_index_y
+                x_start = select_index_x - crop_size // 2
+                x_end = select_index_x + crop_size // 2
+                y_start = select_index_y - crop_size // 2
+                y_end = select_index_y + crop_size // 2
+                x_start += margin
+                x_end += margin
+                y_start += margin
+                y_end += margin
+            else:
+                random_index_x = random.randint(0, h - 1)
+                random_index_y = random.randint(0, h - 1)
+                x_start = random_index_x - crop_size // 2
+                x_end = random_index_x + crop_size // 2
+                y_start = random_index_y - crop_size // 2
+                y_end = random_index_y + crop_size // 2
+                x_start += margin
+                x_end += margin
+                y_start += margin
+                y_end += margin
+            
+            if (x_end-x_start)!=(y_end-y_start):
+                AssertionError("crop_out_margin")
+            
+            box.append((x_start,x_end,y_start,y_end))
+            crops.append(padded_image[i][:,x_start:x_end,y_start:y_end])
+            
+            
+            # crop_img = crops[-1]
+            # crop_img = TF.to_pil_image(crop_img)
+            # crop_img.save('crop_img_in_block_fg_crop.png')
+
+            
+            
+            # denoise strategy is important to maintain stability
+
+            # plt.imshow(crop_mask.cpu(), cmap='jet', vmin=0, vmax=1)
+            # plt.colorbar()
+            # plt.title("crop" + "mask")
+            
+            # plt.savefig('output-image'+ "/" +f'mask' + str(j) + '.png')
+            # plt.close()
+
+                        
+            # crop_img = crops[-1]
+            # crop_img = TF.to_pil_image(crop_img)
+            # crop_img.save('crop_img_in_block_fg_crop.png')
+
+        #mosaic
+        mosaic_crop_h1 = torch.cat((crops[0],crops[1]),dim=2)
+        mosaic_crop_h2 = torch.cat((crops[2],crops[3]),dim=2)
+        mosaic_crop = torch.cat((mosaic_crop_h1,mosaic_crop_h2),dim=1)
+        mosaic_crops.append(mosaic_crop)
+        flags.append(cls+1)
+        crops = []
+        
+        # crop_img = mosaic_crop
+        # crop_img = TF.to_pil_image(crop_img)
+        # crop_img.save('crop_img_in_block_fg_crop.png')
+
+    return mosaic_crops, flags, box
+
+
 
 def crop_from_roi_neg(images,cls_label = None, roi_mask=None, crop_num=8, crop_size=96):
     #image 2 3 448 448

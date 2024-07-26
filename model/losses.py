@@ -56,7 +56,51 @@ def get_spacial_bce_loss(cam,label,per_pic_thre):
         
     return spacial_bce_loss / b
 
+def get_spacial_bce_loss_focal_bg(cam,label,per_pic_thre):
+    #cam [b,c,h,w] label [b,c] per_pic_thre [b,c+1] cam_flatten [b,c,h*w]
+    b,c,h,w = cam.size()
+    cam_flatten = cam.view(b, c, -1)
     
+    
+    
+    fg_per_pic_thre = per_pic_thre[:,1:]
+    fg_per_pic_thre_t = torch.round(fg_per_pic_thre *(h*w)).to(int).cuda()
+    spacial_bce_loss = 0
+    for i in range(b):
+        fg_channel = cam_flatten.detach()[i][label[i] == 1]
+        fg_channel_sorted,fg_channel_sorted_index = torch.sort(fg_channel,dim=-1,descending=True)
+        thre_t_idx = fg_per_pic_thre_t[i][label[i] == 1]
+        thre_t = fg_channel_sorted[torch.arange(fg_channel.size()[0]),thre_t_idx]
+        # thre_t_idx = fg_channel_sorted_index[fg_per_pic_thre_t[i][label[i]==1]]
+        # thre_t = 
+        thre_t_dim_class = torch.full((c,), 9999.0).cuda()
+        thre_t_dim_class[label[i]==1] = thre_t
+        # [2,1]->[20]         
+        #    [c,h*w]                        [c,h*w]       [c,1]        
+        generate_label = torch.where((cam_flatten.detach()[i] >= thre_t_dim_class.unsqueeze(-1)),torch.tensor(1).cuda(),torch.tensor(0).cuda())
+
+
+#focal_loss——————————————————————————————————————————————————————————————————————————————————————————————————————
+        generate_label_class_dim = torch.sum(generate_label,dim=0)
+        negetive_sample = torch.where(generate_label_class_dim == 0)
+        positive_sample = torch.where(generate_label_class_dim > 0)
+        
+        _negetive_sample = negetive_sample[0]
+        _positive_sample = positive_sample[0]
+        
+        spacial_bce_loss_neg = F.multilabel_soft_margin_loss(cam_flatten[i, :, _negetive_sample.tolist()], generate_label[:, _negetive_sample.tolist()])
+        spacial_bce_loss_pos = F.multilabel_soft_margin_loss(cam_flatten[i, :, _positive_sample.tolist()], generate_label[:, _positive_sample.tolist()])
+        
+        spacial_bce_loss += 0.3 * spacial_bce_loss_neg + 0.7 * spacial_bce_loss_pos
+        
+        # print('pos:',spacial_bce_loss_pos,' neg:',spacial_bce_loss_neg)
+#origin loss——————————————————————————————————————————————————————————————————————————————————————————————————————
+        # spacial_bce_loss += F.multilabel_soft_margin_loss(cam_flatten[i],generate_label)
+    # print("spacial_bce_loss:PRINTING IN SPACIAL-BCE BLOCK",spacial_bce_loss/b)
+        
+    return spacial_bce_loss / b    
+
+
 
 def get_masked_ptc_loss(inputs, mask):
 
@@ -88,6 +132,18 @@ def get_seg_loss(pred, label, ignore_index=255):
     return (bg_loss + fg_loss) * 0.5
 
 def get_seg_consistence_loss(pred_1, pred_2, ignore_index=255):
+    #[b,21,h,w]   [b,h,w] 
+    pred_2_label = torch.argmax(F.softmax(pred_2,dim=1),dim=1)
+    bg_label = pred_2_label.clone()
+    bg_label[pred_2_label!=0] = ignore_index
+    bg_loss = F.cross_entropy(pred_1, bg_label.type(torch.long), ignore_index=ignore_index)
+    fg_label = pred_2_label.clone()
+    fg_label[pred_2_label==0] = ignore_index
+    fg_loss = F.cross_entropy(pred_1, fg_label.type(torch.long), ignore_index=ignore_index)
+
+    return (bg_loss + fg_loss) * 0.5
+
+def get_cam_consistence_loss(pred_1, pred_2, ignore_index=255):
     #[b,21,h,w]   [b,h,w] 
     pred_2_label = torch.argmax(F.softmax(pred_2,dim=1),dim=1)
     bg_label = pred_2_label.clone()
@@ -1186,6 +1242,98 @@ class ContrastLoss_mixbranch(nn.Module):
         return contrastive_loss.cuda() / b
     
     
+class ContrastLoss_classify(nn.Module):   
+    def __init__(self,temp=1.0,num_cls = 20, buffer_lenth = 368 ,buffer_dim = 1024):
+        super().__init__()
+        self.temp = temp
+        # self.center_momentum = center_momentum
+
+        self.buffer_cls = num_cls 
+        self.buffer_dim = buffer_dim
+        self.buffer_lenth = buffer_lenth
+        self.feature_contrast = torch.zeros(self.buffer_cls,self.buffer_lenth ,self.buffer_dim)
+        # self.is_used_tag = torch.zeros(self.buffer_cls,self.buffer_lenth)
+        
+
+    def forward(self, feature_contrast,another_feature_contrast, cls_label,n_iter):
+        #                   [0,20]        [0,19]
+        n_iter = min(n_iter , 6000)
+        # thre_cos_in_group =0.8 - (n_iter-3000)/3000 * 0.5
+        thre_high_posi = (n_iter-3000)/3000 * 0.7
+        thre_low_posi = (n_iter-3000)/3000 * 0.3
+        
+        #能收敛了
+        b, _ = feature_contrast.shape
+        tempreture = 1
+        contrastive_loss = torch.tensor(0)
+        cnt = 0
+        for i in range(b):
+            # bg_feature = feature_contrast[i][0]
+            update = False
+            cls = cls_label[i]
+            cls_feature = feature_contrast[i]
+            
+            buffer_index = cls
+            
+            #positive
+            
+            positive_group = [another_feature_contrast[i]]
+            
+            #negetive 现在是所有与cls不同的不管bg or fg都为negative
+            import random
+            random_idx = random.sample(range(0, self.buffer_lenth-1), 20)
+
+            negetive_in_buffer = [self.feature_contrast[x][random_idx[x]].cuda() for x in range(self.buffer_cls) if x!=buffer_index]              
+            
+            # negetive_in_pic = [feature_fg_contrast[x].detach() for x in cls_index[0] if x.item()!=cls] + [bg_feature.detach()]
+            
+            negative_group = negetive_in_buffer #+ negetive_in_pic
+            
+            
+            #contrast loss and infoNCE
+            # 计算正类pair的相似度
+            positive_similarity = torch.abs(torch.cosine_similarity(cls_feature, torch.stack(positive_group).cuda()))
+
+            # 计算负类pair的相似度
+
+            negative_similarity = torch.cat([torch.cosine_similarity(cls_feature, negative_pair.unsqueeze(0).cuda()) for negative_pair in negative_group])
+            
+            # positive_similarity = F.cosine_similarity(cls_feature, torch.stack(positive_group).cuda())
+            # negative_similarity = torch.stack([torch.dot(cls_feature, negative_pair.cuda()) for negative_pair in negative_group])
+            if (positive_similarity < thre_high_posi):
+                pass
+                #只是取决于更不更新缓冲区，而不是进不进行loss损失
+            else:
+                self.feature_contrast[buffer_index, 0] = cls_feature.detach()
+                self.feature_contrast[buffer_index] = torch.roll(self.feature_contrast[buffer_index], shifts=1, dims=0)
+                update = True
+            
+            
+            logits = torch.clamp(torch.abs(torch.cat([positive_similarity, negative_similarity])),min=1e-5,max=1-1e-5)
+
+            # div = torch.sum(torch.exp(logits/tempreture))
+            # head = torch.exp(positive_similarity/tempreture)
+            # prob_logits = torch.div(head , div)
+            # infoNCE_loss = -(torch.log(prob_logits))            
+            # 构建InfoNCE loss
+            targets = torch.cat([torch.ones_like(positive_similarity), torch.zeros_like(negative_similarity)])
+
+            print(update , cls , " with ",logits)
+            infoNCE_loss = F.binary_cross_entropy(logits, targets)
+            if logits[0] < thre_low_posi:
+                print('mis-crop refine')
+                infoNCE_loss = 0
+            
+            contrastive_loss  = contrastive_loss + infoNCE_loss
+
+                
+        
+
+        return contrastive_loss.cuda() / b
+    
+
+    
+    
 class ContrastLoss_moco(nn.Module):   
     def __init__(self,temp=1.0,num_cls = 20, buffer_lenth = 368 ,buffer_dim = 1024):
         super().__init__()
@@ -1274,6 +1422,79 @@ class ContrastLoss_moco(nn.Module):
         
 
         return contrastive_loss.cuda() / b
+
+class feature_prototype(nn.Module):   
+    def __init__(self,temp=1.0,num_cls = 20, buffer_lenth = 368 ,buffer_dim = 1024):
+        super().__init__()
+        self.temp = temp
+        # self.center_momentum = center_momentum
+
+        self.buffer_cls = num_cls 
+        self.buffer_dim = buffer_dim
+        self.buffer_lenth = buffer_lenth
+        self.feature_contrast = torch.zeros(self.buffer_cls,self.buffer_dim)
+        # self.is_used_tag = torch.zeros(self.buffer_cls,self.buffer_lenth)
+
+
+    def forward(self, global_cls_token,local_cls_token, cls_label,flags):
+        #                   [0,20]        [0,19]
+
+        
+        #用来修正global proj的 能收敛了
+        b, _ = global_cls_token.shape
+        tempreture = 1
+        contrastive_loss = torch.tensor(0)
+        cnt = 0
+        
+        posi_flags = [x-1 for x in flags if x>0]
+        tensor_flags = torch.tensor(flags)
+        posi_local_cls_token = local_cls_token[tensor_flags>0]
+        
+        
+        for i in range(b):
+            # bg_feature = feature_contrast[i][0]
+            update = False
+            cls_current = cls_label[i]
+            if torch.sum(cls_current == 1) == 1:
+                cls = torch.where(cls_current == 1)
+                cls = cls[0].item()
+                buffer_index  = cls
+                current_global_cls_token = global_cls_token[i]
+
+                #update prototype
+                
+                positive_similarity = F.cosine_similarity(current_global_cls_token , self.feature_contrast[buffer_index].unsqueeze(0).cuda())
+                
+                
+                # if (abs(positive_similarity) + 0.05 >= thre_high_posi):
+                if positive_similarity == 0:
+                    self.feature_contrast[buffer_index] =  current_global_cls_token.detach()
+                else:
+                    self.feature_contrast[buffer_index] = 0.9 * self.feature_contrast[buffer_index].cuda() + 0.1 * abs(positive_similarity.item()) * current_global_cls_token.detach()
+
+                    
+
+                self.feature_contrast[buffer_index] = F.normalize(self.feature_contrast[buffer_index],dim=-1,p=2)
+            
+                #prototype loss (to seperate different cls features)
+                negetive_in_buffer = [self.feature_contrast[x].cuda() for x in range(self.buffer_cls) if x!=buffer_index]              
+                negetive_item = torch.stack(negetive_in_buffer)
+                negative_similarity = F.cosine_similarity(current_global_cls_token, negetive_item)
+
+                logits = torch.clamp(torch.abs(torch.cat([positive_similarity, negative_similarity])),min=1e-5,max=1-1e-5)
+                targets = torch.cat([torch.ones_like(positive_similarity), torch.zeros_like(negative_similarity)])
+
+                print(update , cls , " with ",logits)
+                infoNCE_loss = F.binary_cross_entropy(logits, targets)
+                contrastive_loss  = contrastive_loss + infoNCE_loss
+
+            
+        return contrastive_loss.cuda() / b    
+
+
+
+
+    
     
 class ContrastLoss_prototype(nn.Module):   
     def __init__(self,temp=1.0,num_cls = 20, buffer_lenth = 368 ,buffer_dim = 1024):
@@ -1288,70 +1509,517 @@ class ContrastLoss_prototype(nn.Module):
         # self.is_used_tag = torch.zeros(self.buffer_cls,self.buffer_lenth)
 
 
-    def forward(self, feature_contrast,another_feature_contrast, cls_label,n_iter):
+    def forward(self, global_cls_token,local_cls_token, cls_label,flags):
         #                   [0,20]        [0,19]
-        n_iter = min(n_iter , 6000)
-        # thre_cos_in_group =0.8 - (n_iter-3000)/3000 * 0.5
-        thre_high_posi = (n_iter-3000)/3000 * 0.7
-        thre_low_posi = (n_iter-3000)/3000 * 0.4
+
         
         #能收敛了
-        b, _ = feature_contrast.shape
+        b, _ = global_cls_token.shape
         tempreture = 1
         contrastive_loss = torch.tensor(0)
         cnt = 0
+        
+        posi_flags = [x-1 for x in flags if x>0]
+        tensor_flags = torch.tensor(flags)
+        posi_local_cls_token = local_cls_token[tensor_flags>0]
+        posi_flags_tensor = torch.tensor(posi_flags)
+        
+        
         for i in range(b):
             # bg_feature = feature_contrast[i][0]
             update = False
-            cls = cls_label[i]
-            cls_feature = feature_contrast[i]
-            
-            buffer_index = cls
-            
+            cls_current = cls_label[i]
+            if torch.sum(cls_current == 1) == 1:
+                cls = torch.where(cls_current == 1)
+                cls = cls[0].item()
+                buffer_index  = cls
+                current_global_cls_token = global_cls_token[i]
 
-            #positive
-            
-            positive_similarity = F.cosine_similarity(cls_feature , self.feature_contrast[buffer_index].unsqueeze(0).cuda())
-            
-            # if (abs(positive_similarity) + 0.05 >= thre_high_posi):
-            self.feature_contrast[buffer_index] = 0.9 * self.feature_contrast[buffer_index].cuda() + 0.1 * cls_feature.detach()
-
-        
-            
-
-            negetive_in_buffer = [self.feature_contrast[x].cuda() for x in range(self.buffer_cls) if x!=buffer_index]              
-            negetive_item = torch.stack(negetive_in_buffer)
-            negative_similarity = F.cosine_similarity(cls_feature, negetive_item)
-
-            
-            
-            logits = torch.clamp(torch.abs(torch.cat([positive_similarity, negative_similarity])),min=1e-5,max=1-1e-5)
-
-            # div = torch.sum(torch.exp(logits/tempreture))
-            # head = torch.exp(positive_similarity/tempreture)
-            # prob_logits = torch.div(head , div)
-            # infoNCE_loss = -(torch.log(prob_logits))            
-            # 构建InfoNCE loss
-            targets = torch.cat([torch.ones_like(positive_similarity), torch.zeros_like(negative_similarity)])
-
-            print(update , cls , " with ",logits)
-            infoNCE_loss = F.multilabel_soft_margin_loss(logits, targets)
-            # if logits[0] < thre_low_posi:
-            #     print('mis-crop refine')
-            #     infoNCE_loss = 0
-            #     self.feature_contrast[buffer_index] = 0.99 * self.feature_contrast[buffer_index].cuda() - 0.01 * cls_feature.detach()
-            
-            contrastive_loss  = contrastive_loss + infoNCE_loss
-
+                #update prototype
                 
-        
+                positive_similarity = F.cosine_similarity(current_global_cls_token , self.feature_contrast[buffer_index].unsqueeze(0).cuda())
+                
+                
+                # if (abs(positive_similarity) + 0.05 >= thre_high_posi):
+                if positive_similarity == 0:
+                    self.feature_contrast[buffer_index] =  current_global_cls_token.detach()
+                else:
+                    self.feature_contrast[buffer_index] = 0.9 * self.feature_contrast[buffer_index].cuda() + 0.1 * abs(positive_similarity.item()) * current_global_cls_token.detach()
 
+                    
+
+                self.feature_contrast[buffer_index] = F.normalize(self.feature_contrast[buffer_index],dim=-1,p=2)
+            
+                #prototype loss (to seperate different cls features)
+                negetive_in_buffer = [self.feature_contrast[x].cuda() for x in range(self.buffer_cls) if x!=buffer_index]              
+                negetive_item = torch.stack(negetive_in_buffer)
+                negative_similarity = F.cosine_similarity(current_global_cls_token, negetive_item)
+
+                logits = torch.clamp(torch.abs(torch.cat([positive_similarity, negative_similarity])),min=1e-5,max=1-1e-5)
+                targets = torch.cat([torch.ones_like(positive_similarity), torch.zeros_like(negative_similarity)])
+
+                # pri  t(update , cls , " with ",logits)
+                infoNCE_loss = F.binary_cross_entropy(logits, targets)
+                contrastive_loss  = contrastive_loss + infoNCE_loss
+
+        local_posi_contrast = [self.feature_contrast[x].cuda() for x in posi_flags]
+        local_posi_contrast = torch.stack(local_posi_contrast,dim=0)
+        
+        #现在不是info nce，可以改成infoNCE 更合理
+        # local_posi_logits = torch.clamp(abs(F.cosine_similarity(posi_local_cls_token,local_posi_contrast)),min=1e-5,max=1-1e-5)
+        local_posi_logits = torch.clamp((F.cosine_similarity(posi_local_cls_token,local_posi_contrast)),min=1e-5,max=1-1e-5)
+        local_posi_targets = torch.ones_like(local_posi_logits)
+        local_posi_loss = F.binary_cross_entropy(local_posi_logits,local_posi_targets)
+        # print(local_posi_logits, ' ',local_posi_loss)
+        contrastive_loss = contrastive_loss + local_posi_loss
+            
         return contrastive_loss.cuda() / b    
 
+
+class ContrastLoss_prototypeV2(nn.Module):   
+    def __init__(self,temp=1.0,num_cls = 20, buffer_lenth = 368 ,buffer_dim = 1024):
+        super().__init__()
+        self.temp = temp
+        # self.center_momentum = center_momentum
+
+        self.buffer_cls = num_cls 
+        self.buffer_dim = buffer_dim
+        self.buffer_lenth = buffer_lenth
+        self.feature_contrast = torch.zeros(self.buffer_cls,self.buffer_dim)
+        # self.is_used_tag = torch.zeros(self.buffer_cls,self.buffer_lenth)
+
+
+    def forward(self, global_cls_token,local_cls_token, cls_label,flags):
+        #                   [0,20]        [0,19]
+
+        #能收敛了
+        b, _ = global_cls_token.shape
+        tempreture = 1
+        contrastive_loss = torch.tensor(0)
+        cnt = 0
+        
+        posi_flags = [x-1 for x in flags if x>0]
+        tensor_flags = torch.tensor(flags)
+        posi_local_cls_token = local_cls_token[tensor_flags>0]
+        bg_local_cls_token = local_cls_token[tensor_flags==0]
+        
+        for i in range(b):
+            # bg_feature = feature_contrast[i][0]
+            update = False
+            cls_current = cls_label[i]
+            if torch.sum(cls_current == 1) == 1:
+                cls = torch.where(cls_current == 1)
+                cls = cls[0].item()
+                buffer_index  = cls
+                current_global_cls_token = global_cls_token[i]
+
+                #update prototype
+                
+                positive_similarity = F.cosine_similarity(current_global_cls_token , self.feature_contrast[buffer_index].unsqueeze(0).cuda())
+                
+                
+                # if (abs(positive_similarity) + 0.05 >= thre_high_posi):
+                if positive_similarity == 0:
+                    self.feature_contrast[buffer_index] =  current_global_cls_token.detach()
+                else:
+                    self.feature_contrast[buffer_index] = (1-0.1 * abs(positive_similarity.item())) * self.feature_contrast[buffer_index].cuda() + 0.1 * abs(positive_similarity.item()) * current_global_cls_token.detach()
+
+                    
+
+                self.feature_contrast[buffer_index] = F.normalize(self.feature_contrast[buffer_index],dim=-1,p=2)
+            
+                #prototype loss (to seperate different cls features)
+                negetive_in_buffer = [self.feature_contrast[x].cuda() for x in range(self.buffer_cls) if x!=buffer_index]              
+                negetive_item = torch.stack(negetive_in_buffer)
+                negative_similarity = F.cosine_similarity(current_global_cls_token, negetive_item)
+
+                logits = torch.clamp(torch.abs(torch.cat([positive_similarity, negative_similarity])),min=1e-5,max=1-1e-5)
+                targets = torch.cat([torch.ones_like(positive_similarity), torch.zeros_like(negative_similarity)])
+
+                print(update , cls , " with ",logits)
+                infoNCE_loss = F.binary_cross_entropy(logits, targets)
+                contrastive_loss  = contrastive_loss + infoNCE_loss
+
+        #local - global contrast (fg)
+        local_posi_contrast = [self.feature_contrast[x].cuda() for x in posi_flags]
+        local_posi_contrast = torch.stack(local_posi_contrast,dim=0)
+        
+        #现在不是info nce，可以改成infoNCE 更合理
+        # local_posi_logits = torch.clamp(abs(F.cosine_similarity(posi_local_cls_token,local_posi_contrast)),min=1e-5,max=1-1e-5)
+        local_posi_logits = torch.clamp((F.cosine_similarity(posi_local_cls_token,local_posi_contrast)),min=1e-5,max=1-1e-5)
+        local_posi_targets = torch.ones_like(local_posi_logits)
+        local_posi_loss = F.binary_cross_entropy(local_posi_logits,local_posi_targets)
+        # print(local_posi_logits, ' ',local_posi_loss)
+        contrastive_loss = contrastive_loss + local_posi_loss
+        
+
+            
+        return contrastive_loss.cuda() / b    
+
+class ContrastLoss_prototypeV3(nn.Module):   
+    def __init__(self,temp=1.0,num_cls = 20, buffer_lenth = 368 ,buffer_dim = 1024):
+        super().__init__()
+        self.temp = temp
+        # self.center_momentum = center_momentum
+
+        self.buffer_cls = num_cls 
+        self.buffer_dim = buffer_dim
+        self.buffer_lenth = buffer_lenth
+        self.feature_contrast = torch.zeros(self.buffer_cls,self.buffer_dim)
+        # self.is_used_tag = torch.zeros(self.buffer_cls,self.buffer_lenth)
+
+
+    def forward(self, global_cls_token,local_cls_token, cls_label,flags):
+        #                   [0,20]        [0,19]
+
+        
+        #能收敛了
+        b, _ = global_cls_token.shape
+        tempreture = 1
+        contrastive_loss = torch.tensor(0)
+        cnt = 0
+        
+        posi_flags = [x-1 for x in flags if x>0]
+        tensor_flags = torch.tensor(flags)
+        posi_flags_tensor = torch.tensor(posi_flags)
+        posi_local_cls_token = local_cls_token[tensor_flags>0]
+        bg_local_cls_token = local_cls_token[tensor_flags==0]
+        
+        for i in range(b):
+            # bg_feature = feature_contrast[i][0]
+            update = False
+            cls_current = cls_label[i]
+            if torch.sum(cls_current == 1) == 1:
+                cls = torch.where(cls_current == 1)
+                cls = cls[0].item()
+                buffer_index  = cls
+                current_global_cls_token = global_cls_token[i]
+
+                #update prototype
+                
+                positive_similarity = F.cosine_similarity(current_global_cls_token , self.feature_contrast[buffer_index].unsqueeze(0).cuda())
+                
+                
+                # if (abs(positive_similarity) + 0.05 >= thre_high_posi):
+                if positive_similarity == 0:
+                    self.feature_contrast[buffer_index] =  current_global_cls_token.detach()
+                else:
+                    self.feature_contrast[buffer_index] = 0.9 * self.feature_contrast[buffer_index].cuda() + 0.1 * abs(positive_similarity.item()) * current_global_cls_token.detach()
+
+                    
+
+                self.feature_contrast[buffer_index] = F.normalize(self.feature_contrast[buffer_index],dim=-1,p=2)
+            
+                #prototype loss (to seperate different cls features)
+                negetive_in_buffer = [self.feature_contrast[x].cuda() for x in range(self.buffer_cls) if x!=buffer_index]              
+                negetive_item = torch.stack(negetive_in_buffer)
+                negative_similarity = F.cosine_similarity(current_global_cls_token, negetive_item)
+
+                logits = torch.clamp(torch.abs(torch.cat([positive_similarity, negative_similarity])),min=1e-5,max=1-1e-5)
+                targets = torch.cat([torch.ones_like(positive_similarity), torch.zeros_like(negative_similarity)])
+
+                print(update , cls , " with ",logits)
+                infoNCE_loss = F.binary_cross_entropy(logits, targets)
+                contrastive_loss  = contrastive_loss + infoNCE_loss
+
+        #local - global contrast (fg)
+        
+        num_fg = posi_local_cls_token.shape[0]
+        local_posi_contrast = self.feature_contrast.repeat(num_fg,1,1).cuda()
+        
+        
+        #infoNCE
+        # local_posi_logits = torch.clamp(abs(F.cosine_similarity(posi_local_cls_token,local_posi_contrast)),min=1e-5,max=1-1e-5)
+        local_posi_logits = torch.clamp(abs(F.cosine_similarity(posi_local_cls_token.unsqueeze(1),local_posi_contrast,dim=-1)),min=1e-5,max=1-1e-5)
+        local_posi_targets = torch.zeros_like(local_posi_logits)
+        local_posi_targets[range(num_fg),posi_flags_tensor.tolist()] = 1
+        
+        local_posi_loss = F.binary_cross_entropy(local_posi_logits,local_posi_targets)
+        # print(local_posi_logits, ' ',local_posi_loss)
+        
+        print(local_posi_logits[0])
+        contrastive_loss = contrastive_loss + local_posi_loss
+        
+        #local - global contrast (bg)
+        # num_bg = bg_local_cls_token.shape[0]
+        # local_bg_contrast = self.feature_contrast.repeat(num_bg,1,1).cuda()
+        # local_bg_logits = torch.clamp(abs(F.cosine_similarity(bg_local_cls_token.unsqueeze(1),local_bg_contrast,dim=-1)),min=1e-5,max=1-1e-5)
+        # local_bg_targets = torch.zeros_like(local_bg_logits)
+        # local_bg_loss = F.binary_cross_entropy(local_bg_logits,local_bg_targets)
+        # contrastive_loss = contrastive_loss + local_bg_loss
+        # print(local_bg_logits[0])
+            
+        return contrastive_loss.cuda() / b    
+    
+
+class ContrastLoss_prototype_instance(nn.Module):   
+    def __init__(self,temp=0.5,num_cls = 20, buffer_lenth = 368 ,buffer_dim = 1024):
+        super().__init__()
+        self.temp = temp
+        # self.center_momentum = center_momentum
+
+        self.buffer_cls = num_cls 
+        self.buffer_dim = buffer_dim
+        self.buffer_lenth = buffer_lenth
+        self.feature_contrast = torch.zeros(self.buffer_cls,self.buffer_dim)
+        # self.is_used_tag = torch.zeros(self.buffer_cls,self.buffer_lenth)
+
+
+    def forward(self, global_cls_token,local_cls_token, cls_label,flags):
+        #                   [0,20]        [0,19]
+
+        
+        #能收敛了
+        b, _ = global_cls_token.shape
+        tempreture = 1
+        contrastive_loss = torch.tensor(0)
+        cnt = 0
+        
+        posi_flags = [x-1 for x in flags if x>0]
+
+        for i , flag in enumerate(posi_flags):
+            cls = flag
+            buffer_index  = cls
+            current_instance_cls_token = local_cls_token[i]
+
+            #update prototype
+            
+            positive_similarity = F.cosine_similarity(current_instance_cls_token , self.feature_contrast[buffer_index].unsqueeze(0).cuda())
+            
+            
+            # if (abs(positive_similarity) + 0.05 >= thre_high_posi):
+            if positive_similarity == 0:
+                self.feature_contrast[buffer_index] =  current_instance_cls_token.detach()
+            else:
+                self.feature_contrast[buffer_index] = (1-0.1 * abs(positive_similarity.item())) * self.feature_contrast[buffer_index].cuda() + 0.1 * abs(positive_similarity.item()) * current_instance_cls_token.detach()
+
+    
+            self.feature_contrast[buffer_index] = F.normalize(self.feature_contrast[buffer_index],dim=-1,p=2)
+        
+            #prototype loss (to seperate different cls features)
+            negetive_in_buffer = [self.feature_contrast[x].cuda() for x in range(self.buffer_cls) if x!=buffer_index]              
+            negetive_item = torch.stack(negetive_in_buffer)
+            
+            current_instance_cls_token_norm = F.normalize(current_instance_cls_token,dim=-1,p=2)
+            all_items = torch.cat((self.feature_contrast[buffer_index].unsqueeze(0).cuda(),negetive_item),dim=0)
+            logits = torch.matmul(current_instance_cls_token_norm, all_items.T)
+            print( cls , " with ",logits)
+            logits = torch.exp(logits / self.temp)
+            
+            loss = -torch.log(logits[0] / (logits.sum(dim=0) + 1e-4 ))
+
+            # logits = torch.clamp(torch.abs(torch.cat([positive_similarity, negative_similarity])),min=1e-5,max=1-1e-5)
+            # targets = torch.cat([torch.ones_like(positive_similarity), torch.zeros_like(negative_similarity)])
+
+
+
+            contrastive_loss  = contrastive_loss + loss
+        
+        
+        
+
+        return contrastive_loss.cuda() / b        
+
     
     
+class ContrastLoss_prototype_mosaic(nn.Module):   
+    def __init__(self,temp=1.0,num_cls = 20, buffer_lenth = 368 ,buffer_dim = 1024):
+        super().__init__()
+        self.temp = temp
+        # self.center_momentum = center_momentum
+
+        self.buffer_cls = num_cls 
+        self.buffer_dim = buffer_dim
+        self.buffer_lenth = buffer_lenth
+        self.feature_contrast = torch.zeros(self.buffer_cls,self.buffer_dim)
+        # self.is_used_tag = torch.zeros(self.buffer_cls,self.buffer_lenth)
+
+
+    def forward(self, global_cls_token,global_mosaic_token,local_cls_token, cls_label,flags,n_iter=0):
+        #                   [0,20]        [0,19]
+
+        
+        #能收敛了
+        b, _ = global_cls_token.shape
+        tempreture = 1
+        contrastive_loss = torch.tensor(0)
+        cnt = 0
+        
+        posi_flags = [x-1 for x in flags if x>0]
+        tensor_flags = torch.tensor(flags)
+        posi_flags_tensor = torch.tensor(posi_flags)
+        posi_local_cls_token = local_cls_token[tensor_flags>0]
+        bg_local_cls_token = local_cls_token[tensor_flags==0]
+        
+        for i in range(b):
+            # bg_feature = feature_contrast[i][0]
+            update = False
+            cls_current = cls_label[i]
+            if torch.sum(cls_current == 1) == 1:
+                cls = torch.where(cls_current == 1)
+                cls = cls[0].item()
+                buffer_index  = cls
+                current_global_cls_token = global_cls_token[i]
+
+                #update prototype
+                
+                positive_similarity = F.cosine_similarity(current_global_cls_token , self.feature_contrast[buffer_index].unsqueeze(0).cuda())
+                
+                
+                # if (abs(positive_similarity) + 0.05 >= thre_high_posi):
+                if positive_similarity == 0:
+                    self.feature_contrast[buffer_index] =  current_global_cls_token.detach()
+                else:
+                    self.feature_contrast[buffer_index] = 0.9 * self.feature_contrast[buffer_index].cuda() + 0.1  * current_global_cls_token.detach()
+
+                    
+
+                self.feature_contrast[buffer_index] = F.normalize(self.feature_contrast[buffer_index],dim=-1,p=2)
+            
+                #prototype loss (to seperate different cls features)
+                negetive_in_buffer = [self.feature_contrast[x].cuda() for x in range(self.buffer_cls) if x!=buffer_index]              
+                negetive_item = torch.stack(negetive_in_buffer)
+                negative_similarity = F.cosine_similarity(current_global_cls_token, negetive_item)
+
+                logits = torch.clamp(torch.abs(torch.cat([positive_similarity, negative_similarity])),min=1e-5,max=1-1e-5)
+                targets = torch.cat([torch.ones_like(positive_similarity), torch.zeros_like(negative_similarity)])
+
+                print(update , cls , " with ",logits)
+                infoNCE_loss = F.binary_cross_entropy(logits, targets)
+                contrastive_loss  = contrastive_loss + infoNCE_loss
+            
+            else:
+                cls = posi_flags[i]
+                buffer_index  = cls
+                current_global_cls_token = global_mosaic_token[i]
+
+                #update prototype
+                
+                positive_similarity = F.cosine_similarity(current_global_cls_token , self.feature_contrast[buffer_index].unsqueeze(0).cuda())
+                
+                
+                # if (abs(positive_similarity) + 0.05 >= thre_high_posi):
+                if positive_similarity == 0:
+                    self.feature_contrast[buffer_index] =  current_global_cls_token.detach()
+                else:
+                    self.feature_contrast[buffer_index] = 0.95 * self.feature_contrast[buffer_index].cuda() + 0.05 * current_global_cls_token.detach()
+
+                    
+
+                self.feature_contrast[buffer_index] = F.normalize(self.feature_contrast[buffer_index],dim=-1,p=2)
+            
+                #prototype loss (to seperate different cls features)
+                negetive_in_buffer = [self.feature_contrast[x].cuda() for x in range(self.buffer_cls) if x!=buffer_index]              
+                negetive_item = torch.stack(negetive_in_buffer)
+                negative_similarity = F.cosine_similarity(current_global_cls_token, negetive_item)
+
+                logits = torch.clamp(torch.abs(torch.cat([positive_similarity, negative_similarity])),min=1e-5,max=1-1e-5)
+                targets = torch.cat([torch.ones_like(positive_similarity), torch.zeros_like(negative_similarity)])
+
+                print(update , cls , " with ",logits)
+                infoNCE_loss = F.binary_cross_entropy(logits, targets)
+                contrastive_loss  = contrastive_loss + infoNCE_loss
+            
+        #local - global contrast (fg)
+        
+        num_fg = posi_local_cls_token.shape[0]
+        local_posi_contrast = self.feature_contrast.repeat(num_fg,1,1).cuda()
+        #infoNCE
+        # local_posi_logits = torch.clamp(abs(F.cosine_similarity(posi_local_cls_token,local_posi_contrast)),min=1e-5,max=1-1e-5)
+        local_posi_logits = torch.clamp(abs(F.cosine_similarity(posi_local_cls_token.unsqueeze(1),local_posi_contrast,dim=-1)),min=1e-5,max=1-1e-5)
+        local_posi_targets = torch.zeros_like(local_posi_logits)
+        local_posi_targets[range(num_fg),posi_flags_tensor.tolist()] = 1
+        
+        local_posi_loss = F.binary_cross_entropy(local_posi_logits,local_posi_targets)
+        # print(local_posi_logits, ' ',local_posi_loss)
+        
+        print(local_posi_logits[0])
+        contrastive_loss = contrastive_loss + local_posi_loss
+        
+            
+        return contrastive_loss.cuda() / b  
     
+class ContrastLoss_prototype_bg(nn.Module):   
+    def __init__(self,temp=1.0,num_cls = 20, buffer_lenth = 368 ,buffer_dim = 1024):
+        super().__init__()
+        self.temp = temp
+        # self.center_momentum = center_momentum
+
+        self.buffer_cls = num_cls 
+        self.buffer_dim = buffer_dim
+        self.buffer_lenth = buffer_lenth
+        self.feature_contrast = torch.zeros(self.buffer_cls,self.buffer_dim)
+        # self.is_used_tag = torch.zeros(self.buffer_cls,self.buffer_lenth)
+
+
+    def forward(self, global_cls_token,local_cls_token, cls_label,flags,n_iter):
+        #                   [0,20]        [0,19]
+
+        
+        #能收敛了
+        b, _ = global_cls_token.shape
+        tempreture = 1
+        contrastive_loss = torch.tensor(0)
+        cnt = 0
+        
+        posi_flags = [x-1 for x in flags if x>0]
+        tensor_flags = torch.tensor(flags)
+        posi_flags_tensor = torch.tensor(posi_flags)
+        posi_local_cls_token = local_cls_token[tensor_flags>0]
+        bg_local_cls_token = local_cls_token[tensor_flags==0]
+        
+        for i in range(b):
+            # bg_feature = feature_contrast[i][0]
+            update = False
+            cls_current = cls_label[i]
+            if torch.sum(cls_current == 1) == 1:
+                cls = torch.where(cls_current == 1)
+                cls = cls[0].item()
+                buffer_index  = cls
+                current_global_cls_token = global_cls_token[i]
+
+                #update prototype
+                
+                positive_similarity = F.cosine_similarity(current_global_cls_token , self.feature_contrast[buffer_index].unsqueeze(0).cuda())
+                
+                
+                # if (abs(positive_similarity) + 0.05 >= thre_high_posi):
+                if positive_similarity == 0:
+                    self.feature_contrast[buffer_index] =  current_global_cls_token.detach()
+                else:
+                    self.feature_contrast[buffer_index] = 0.9 * self.feature_contrast[buffer_index].cuda() + 0.1 * abs(positive_similarity.item()) * current_global_cls_token.detach()
+
+                    
+
+                self.feature_contrast[buffer_index] = F.normalize(self.feature_contrast[buffer_index],dim=-1,p=2)
+            
+                #prototype loss (to seperate different cls features)
+                negetive_in_buffer = [self.feature_contrast[x].cuda() for x in range(self.buffer_cls) if x!=buffer_index]              
+                negetive_item = torch.stack(negetive_in_buffer)
+                negative_similarity = F.cosine_similarity(current_global_cls_token, negetive_item)
+
+                logits = torch.clamp(torch.abs(torch.cat([positive_similarity, negative_similarity])),min=1e-5,max=1-1e-5)
+                targets = torch.cat([torch.ones_like(positive_similarity), torch.zeros_like(negative_similarity)])
+
+                print(update , cls , " with ",logits)
+                infoNCE_loss = F.binary_cross_entropy(logits, targets)
+                contrastive_loss  = contrastive_loss + infoNCE_loss
+
+
+        #local - global contrast (bg)
+        num_bg = bg_local_cls_token.shape[0]
+        local_bg_contrast = self.feature_contrast.repeat(num_bg,1,1).cuda()
+        local_bg_logits = torch.clamp(abs(F.cosine_similarity(bg_local_cls_token.unsqueeze(1),local_bg_contrast,dim=-1)),min=1e-5,max=1-1e-5)
+        local_bg_targets = torch.zeros_like(local_bg_logits)
+        local_bg_loss = F.binary_cross_entropy(local_bg_logits,local_bg_targets)
+        contrastive_loss = contrastive_loss + local_bg_loss
+        print(local_bg_logits[0])
+            
+        return contrastive_loss.cuda() / b        
+
+
     
+
 class ContrastLoss_single_branch(nn.Module):   
     def __init__(self,temp=1.0,num_cls = 20, buffer_lenth = 256 ,buffer_dim = 1024):
         super().__init__()
@@ -1541,17 +2209,19 @@ class ContrastLoss_mixbranch_bug(nn.Module):
         return contrastive_loss.cuda() / b
     
     
-def get_bg_contrastive_loss(global_cls_token, local_cls_token,num_crop):
+def get_bg_contrastive_loss(global_cls_token, local_cls_token, flags,num_crop):
     #local cls token dual branch
     
-    b ,_ = global_cls_token.shape               #2b,dim
-    b1_local_cls_token = local_cls_token[:b*num_crop,:]
-    b2_local_cls_token = local_cls_token[b*num_crop:,:]
+    b ,_ = global_cls_token.shape
+    
+    flags = torch.tensor(flags)
+    local_bg_token = local_cls_token[flags==0]
+
     contrastive_loss = torch.tensor(0)
     for i in range(b):
-        b1_current_token = b1_local_cls_token[i*num_crop:(i+1)*num_crop,:]
-        b2_current_token = b2_local_cls_token[i*num_crop:(i+1)*num_crop,:]
-        current_token = torch.cat((b1_current_token,b2_current_token),dim=0)
+        
+        current_token = local_bg_token[i*num_crop:(i+1)*num_crop,:]
+
         loss = -torch.log(torch.clamp(1- torch.mean(abs(F.cosine_similarity(global_cls_token[i],current_token))),torch.tensor(1e-2).cuda(),torch.tensor(1-1e-2).cuda()))
         contrastive_loss = contrastive_loss + loss
     
@@ -1566,7 +2236,7 @@ def get_bg_fg_contrastive_loss(global_cls_token, local_cls_token,num_crop):
         current_token = local_cls_token[i*2*num_crop:2*(i+1)*num_crop,:]
         targets = torch.tensor([1.0,0.0]*num_crop)
         logits = abs(F.cosine_similarity(global_cls_token[i],current_token))
-        
+        # print(logits)bn
         loss = F.binary_cross_entropy(logits,targets.cuda())
         contrastive_loss = contrastive_loss + loss
     
@@ -1580,9 +2250,70 @@ def get_bg_fg_contrastive_clamp_loss(global_cls_token, local_cls_token,num_crop)
     for i in range(b):
         current_token = local_cls_token[i*2*num_crop:2*(i+1)*num_crop,:]
         targets = torch.tensor([1.0,0.0]*num_crop)
-        logits = torch.clamp(torch.abs(F.cosine_similarity(global_cls_token[i],current_token)),torch.tensor(1e-3).cuda(),torch.tenosr(1-1e-3).cuda()) 
+        logits = torch.clamp(abs(F.cosine_similarity(global_cls_token[i],current_token)),torch.tensor(1e-5).cuda(),torch.tensor(1-1e-5).cuda()) 
+        # print(logits)
         
+        # posi = torch.mean(current_token[targets == 1],dim=0)
+        # nege = torch.mean(current_token[targets == 0],dim=0)
+        # simi_between_posi_neg = torch.clamp(abs(F.cosine_similarity(posi,nege.unsqueeze(0))),torch.tensor(1e-5).cuda(),torch.tensor(1-1e-5).cuda()) 
+        # loss_proj_simi = F.binary_cross_entropy(simi_between_posi_neg,torch.tensor([0.]).cuda())
+        # print(loss_proj_simi)
+        print(logits)
         loss = F.binary_cross_entropy(logits,targets.cuda())
         contrastive_loss = contrastive_loss + loss
-    
     return contrastive_loss/b
+
+def get_bg_fg_explict_class_loss(token_class , flags, num_crop = 0):
+
+    targets_cls = [x-1 for x in flags if x > 0]
+    flags = torch.tensor(flags)
+    token_fg_class = token_class[flags > 0]
+    
+
+    
+    n,_ = token_fg_class.shape
+    targets = torch.zeros(n, 20)
+
+    for i, cls in enumerate(targets_cls):
+        targets[i, cls] = 1
+    
+    token_fg_class = F.softmax(token_fg_class,dim = -1)
+    contrastive_loss = F.binary_cross_entropy(token_fg_class, targets.cuda())
+
+    
+    return contrastive_loss
+
+def feature_enhance(fmap , box , roi_mask, flags):
+
+    b , c, h , w = fmap.shape
+    num_crop = len(flags) // b
+    posi_flags = [x-1 for x in flags]
+    tensor_flags = torch.tensor(posi_flags)
+    feature_enhance_loss = torch.tensor(0)
+    for i in range(b):
+        for j in range(num_crop):
+            crop_idx = i*num_crop + j
+            fmap_idx = i
+            cls = posi_flags[crop_idx]
+            
+            
+            # import torchvision.transforms.functional as TF
+            # crop_img = roi_mask[i][box[crop_idx][0]:box[crop_idx][1],box[crop_idx][2]:box[crop_idx][3]]
+            # plt.imshow(crop_img.cpu(), cmap='jet', vmin=-2, vmax=20)
+            # plt.colorbar()
+            
+            # plt.savefig('output-image'+ "/" + 'crop_mask' + 'png')
+            # plt.close()
+            
+            
+            fmap_current = fmap[fmap_idx]
+            fmap_mask = roi_mask[fmap_idx] == cls
+            if torch.sum(fmap_mask) > 0:
+                feature_prototype = torch.mean(fmap_current[:,fmap_mask],dim=-1).detach()
+
+                fmap_crop = fmap[fmap_idx][:,box[crop_idx][0]:box[crop_idx][1],box[crop_idx][2]:box[crop_idx][3]]
+                fmap_crop = F.adaptive_avg_pool2d(fmap_crop,(1,1))
+                loss = 1-torch.clamp(F.cosine_similarity(fmap_crop.squeeze(-1).squeeze(-1).unsqueeze(0),feature_prototype),min=1e-5,max = 1-1e-5)
+                feature_enhance_loss = feature_enhance_loss + loss
+    
+    return feature_enhance_loss / len(flags)
