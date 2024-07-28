@@ -24,7 +24,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--infer_set", default="val", type=str, help="infer_set")
 parser.add_argument("--pooling", default="gmp", type=str, help="pooling method")
 # parser.add_argument("--model_path", default="workdir_voc_final2/2022-11-04-01-50-48-441426/checkpoints/model_iter_20000.pth", type=str, help="model_path")
-parser.add_argument("--model_path", default="/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/2024-07-12-20-54-14-111319/checkpoints/default_model_iter_8000.pth", type=str, help="model_path")
+parser.add_argument("--model_path", default="/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/2024-07-16-12-44-02-908636/checkpoints/default_model_iter_8000.pth", type=str, help="model_path")
 
 parser.add_argument("--backbone", default='vit_base_patch16_224', type=str, help="vit_base_patch16_224")
 parser.add_argument("--data_folder", default='../VOC2012', type=str, help="dataset folder")
@@ -162,7 +162,7 @@ def validate(args=None):
                             pin_memory=False,
                             drop_last=False)
 
-    model = network_du_heads_independent_config(
+    model = network_du_heads_independent_config_cl(
         backbone=args.backbone,
         num_classes=args.num_classes,
         pretrained=False,

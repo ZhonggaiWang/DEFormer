@@ -14,7 +14,7 @@ import torch.nn.functional as F
 from datasets import voc
 from model.double_seg_head import network_du_heads_independent_config
 from model.double_seg_head import network_du_heads_independent_config_cl
-
+from model.double_seg_head import network_du_heads_independent_config_cl_gl
 from model.double_seg_head import network_du_heads_independent_fusion_cam
 
 from torch.utils.data import DataLoader
@@ -27,7 +27,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--infer_set", default="val", type=str, help="infer_set")
 parser.add_argument("--pooling", default="gmp", type=str, help="pooling method")
 # parser.add_argument("--model_path", default="workdir_voc_final2/2022-11-04-01-50-48-441426/checkpoints/model_iter_20000.pth", type=str, help="model_path")
-parser.add_argument("--model_path", default="/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/2024-07-13-04-20-20-953801/checkpoints/default_model_iter_8000.pth", type=str, help="model_path")
+parser.add_argument("--model_path", default="/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/2024-07-28-12-01-41-968384/checkpoints/default_model_iter_8000.pth", type=str, help="model_path")
 
 parser.add_argument("--backbone", default='vit_base_patch16_224', type=str, help="vit_base_patch16_224")
 parser.add_argument("--data_folder", default='../VOC2012', type=str, help="dataset folder")
@@ -37,8 +37,9 @@ parser.add_argument("--ignore_index", default=255, type=int, help="random index"
 parser.add_argument("--scales", default=(1.0, 1.5, 1.25), help="multi_scales for seg")
 parser.add_argument("--save_images", default=False, type=bool, help="save images")
 
-def _validate(model=None, data_loader=None, args=None):
 
+def _validate(model=None, data_loader=None, args=None):
+    # model.to('cuda:5')
     model.eval()
     color_map = plt.get_cmap("Blues")
 
@@ -172,7 +173,7 @@ def validate(args=None):
         aux_layer = -3
     )
 
-
+    model.to('cuda:1')
     trained_state_dict = torch.load(args.model_path, map_location="cpu")
 
     new_state_dict = OrderedDict()

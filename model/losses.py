@@ -1577,7 +1577,7 @@ class ContrastLoss_prototype(nn.Module):
 
 
 class ContrastLoss_prototypeV2(nn.Module):   
-    def __init__(self,temp=1.0,num_cls = 20, buffer_lenth = 368 ,buffer_dim = 1024):
+    def __init__(self,temp=0.5,num_cls = 20, buffer_lenth = 368 ,buffer_dim = 1024):
         super().__init__()
         self.temp = temp
         # self.center_momentum = center_momentum
@@ -1594,14 +1594,13 @@ class ContrastLoss_prototypeV2(nn.Module):
 
         #能收敛了
         b, _ = global_cls_token.shape
-        tempreture = 1
         contrastive_loss = torch.tensor(0)
         cnt = 0
         
         posi_flags = [x-1 for x in flags if x>0]
         tensor_flags = torch.tensor(flags)
         posi_local_cls_token = local_cls_token[tensor_flags>0]
-        bg_local_cls_token = local_cls_token[tensor_flags==0]
+
         
         for i in range(b):
             # bg_feature = feature_contrast[i][0]
@@ -1630,15 +1629,16 @@ class ContrastLoss_prototypeV2(nn.Module):
             
                 #prototype loss (to seperate different cls features)
                 negetive_in_buffer = [self.feature_contrast[x].cuda() for x in range(self.buffer_cls) if x!=buffer_index]              
-                negetive_item = torch.stack(negetive_in_buffer)
-                negative_similarity = F.cosine_similarity(current_global_cls_token, negetive_item)
+                negetive_items = torch.stack(negetive_in_buffer)
 
-                logits = torch.clamp(torch.abs(torch.cat([positive_similarity, negative_similarity])),min=1e-5,max=1-1e-5)
-                targets = torch.cat([torch.ones_like(positive_similarity), torch.zeros_like(negative_similarity)])
+                all_items = torch.cat((self.feature_contrast[buffer_index].unsqueeze(0).cuda(),negetive_items),dim=0)
+                logits = torch.matmul(current_global_cls_token, all_items.T)
+                print( cls , " with ",logits)
+                logits = torch.exp(logits / self.temp)
+                
+                loss = -torch.log(logits[0] / (logits.sum(dim=0) + 1e-4 ))
 
-                print(update , cls , " with ",logits)
-                infoNCE_loss = F.binary_cross_entropy(logits, targets)
-                contrastive_loss  = contrastive_loss + infoNCE_loss
+                contrastive_loss  = contrastive_loss + loss
 
         #local - global contrast (fg)
         local_posi_contrast = [self.feature_contrast[x].cuda() for x in posi_flags]
@@ -1652,7 +1652,7 @@ class ContrastLoss_prototypeV2(nn.Module):
         # print(local_posi_logits, ' ',local_posi_loss)
         contrastive_loss = contrastive_loss + local_posi_loss
         
-
+  
             
         return contrastive_loss.cuda() / b    
 
@@ -1800,22 +1800,84 @@ class ContrastLoss_prototype_instance(nn.Module):
             negetive_in_buffer = [self.feature_contrast[x].cuda() for x in range(self.buffer_cls) if x!=buffer_index]              
             negetive_item = torch.stack(negetive_in_buffer)
             
-            current_instance_cls_token_norm = F.normalize(current_instance_cls_token,dim=-1,p=2)
+            # current_instance_cls_token_norm = F.normalize(current_instance_cls_token,dim=-1,p=2)
             all_items = torch.cat((self.feature_contrast[buffer_index].unsqueeze(0).cuda(),negetive_item),dim=0)
-            logits = torch.matmul(current_instance_cls_token_norm, all_items.T)
-            print( cls , " with ",logits)
+            logits = torch.matmul(current_instance_cls_token, all_items.T)
+            # print( cls , " with ",logits)
             logits = torch.exp(logits / self.temp)
             
             loss = -torch.log(logits[0] / (logits.sum(dim=0) + 1e-4 ))
 
-            # logits = torch.clamp(torch.abs(torch.cat([positive_similarity, negative_similarity])),min=1e-5,max=1-1e-5)
-            # targets = torch.cat([torch.ones_like(positive_similarity), torch.zeros_like(negative_similarity)])
-
-
-
             contrastive_loss  = contrastive_loss + loss
         
         
+        
+
+        return contrastive_loss.cuda() / b        
+
+    
+    
+class ContrastLoss_prototype_instance_gl(nn.Module):   
+    def __init__(self,temp=0.5,num_cls = 20, buffer_lenth = 368 ,buffer_dim = 1024):
+        super().__init__()
+        self.temp = temp
+        # self.center_momentum = center_momentum
+
+        self.buffer_cls = num_cls 
+        self.buffer_dim = buffer_dim
+        self.buffer_lenth = buffer_lenth
+        self.feature_contrast = torch.zeros(self.buffer_cls,self.buffer_dim)
+        # self.is_used_tag = torch.zeros(self.buffer_cls,self.buffer_lenth)
+
+
+    def forward(self, global_cls_token,local_cls_token, global_masked_cls_token,cls_label,flags):
+        #                   [0,20]        [0,19]
+
+        
+        #能收敛了
+        b, _ = global_cls_token.shape
+        tempreture = 1
+        contrastive_loss = torch.tensor(0)
+        cnt = 0
+        
+        posi_flags = [x-1 for x in flags if x>0]
+
+        for i , flag in enumerate(posi_flags):
+            cls = flag
+            buffer_index  = cls
+            current_instance_cls_token = local_cls_token[i]
+
+            #update prototype
+            
+            positive_similarity = F.cosine_similarity(current_instance_cls_token , self.feature_contrast[buffer_index].unsqueeze(0).cuda())
+            
+            
+            # if (abs(positive_similarity) + 0.05 >= thre_high_posi):
+            if positive_similarity == 0:
+                self.feature_contrast[buffer_index] =  current_instance_cls_token.detach()
+            else:
+                self.feature_contrast[buffer_index] = (1-0.1 * abs(positive_similarity.item())) * self.feature_contrast[buffer_index].cuda() + 0.1 * abs(positive_similarity.item()) * current_instance_cls_token.detach()
+
+    
+            self.feature_contrast[buffer_index] = F.normalize(self.feature_contrast[buffer_index],dim=-1,p=2)
+        
+            #prototype loss (to seperate different cls features)
+            negetive_in_buffer = [self.feature_contrast[x].cuda() for x in range(self.buffer_cls) if x!=buffer_index]              
+            negetive_item = torch.stack(negetive_in_buffer)
+            
+            # current_instance_cls_token_norm = F.normalize(current_instance_cls_token,dim=-1,p=2)
+            all_items = torch.cat((self.feature_contrast[buffer_index].unsqueeze(0).cuda(),negetive_item),dim=0)
+            logits = torch.matmul(current_instance_cls_token, all_items.T)
+            # print( cls , " with ",logits)
+            logits = torch.exp(logits / self.temp)
+            
+            loss = -torch.log(logits[0] / (logits.sum(dim=0) + 1e-4 ))
+
+            contrastive_loss  = contrastive_loss + loss
+        
+        global_logits = torch.clamp(abs(F.cosine_similarity(global_cls_token,global_masked_cls_token)),min=1e-5,max=1-1e-5)
+        global_targets = torch.ones_like(global_logits)
+        contrastive_loss += F.binary_cross_entropy((global_logits),global_targets)
         
 
         return contrastive_loss.cuda() / b        
@@ -2261,6 +2323,29 @@ def get_bg_fg_contrastive_clamp_loss(global_cls_token, local_cls_token,num_crop)
         print(logits)
         loss = F.binary_cross_entropy(logits,targets.cuda())
         contrastive_loss = contrastive_loss + loss
+    return contrastive_loss/b
+
+
+def get_bg_fg_contrastive_clamp_infoNCEloss(global_cls_token, local_cls_token,num_crop,flags):
+    #local_cls_token single branch
+    temp = 0.5
+    b ,_ = global_cls_token.shape               #2b,dim
+    contrastive_loss = torch.tensor(0.).cuda()
+    for i in range(b):
+        current_token = local_cls_token[i*2*num_crop:2*(i+1)*num_crop,:]
+        current_flags = flags[i*2*num_crop:2*(i+1)*num_crop]
+        current_flags_tensor = torch.tensor(current_flags)
+        current_global_token = global_cls_token[i]
+        
+        logits = torch.matmul(current_global_token,current_token.T)
+        logits = torch.exp(logits / temp)
+        
+        neg_logits = logits[current_flags_tensor == 0]
+        for j, flag in enumerate(current_flags):
+            if flag > 0:
+                contrastive_loss += -torch.log((logits[j] /(logits[j] + neg_logits.sum(dim=0) + 1e-4))+1e-4) 
+            
+        
     return contrastive_loss/b
 
 def get_bg_fg_explict_class_loss(token_class , flags, num_crop = 0):

@@ -39,14 +39,13 @@ parser.add_argument("--list_folder", default='../datasets/voc', type=str, help="
 parser.add_argument("--num_classes", default=21, type=int, help="number of classes")
 parser.add_argument("--crop_size", default=448, type=int, help="crop_size in training")
 parser.add_argument("--local_crop_size", default=96, type=int, help="crop_size for local view")
-parser.add_argument("--local_crop_num", default=1, type=int, help="crop_num")
 parser.add_argument("--ignore_index", default=255, type=int, help="random index")
 
 parser.add_argument("--work_dir", default="work_dir_voc_wseg", type=str, help="work_dir_voc_wseg")
 
 parser.add_argument("--train_set", default="train_aug", type=str, help="training split")
 parser.add_argument("--val_set", default="val", type=str, help="validation split")
-parser.add_argument("--spg", default=4, type=int, help="samples_per_gpu")
+parser.add_argument("--spg", default=1, type=int, help="samples_per_gpu")
 parser.add_argument("--scales", default=(0.5, 2), help="random rescale in training")
 
 parser.add_argument("--optimizer", default='PolyWarmupAdamW', type=str, help="optimizer")
@@ -64,16 +63,13 @@ parser.add_argument("--warmup_iters", default=1500, type=int, help="warmup_iters
 parser.add_argument("--high_thre", default=0.7, type=float, help="high_bkg_score")
 parser.add_argument("--low_thre", default=0.25, type=float, help="low_bkg_score")
 parser.add_argument("--bkg_thre", default=0.5, type=float, help="bkg_score")
-parser.add_argument("--cam_scales", default=(1.0, 0.5, 0.75, 1.5), help="multi_scales for cam")
+parser.add_argument("--cam_scales", default=(1.0, 0.5, 1.5), help="multi_scales for cam")
 
 parser.add_argument("--w_ptc", default=0.2, type=float, help="w_ptc")
 parser.add_argument("--w_ctc", default=0.45, type=float, help="w_ctc")
-parser.add_argument("--w_seg", default=0.15, type=float, help="w_seg")
+parser.add_argument("--w_seg", default=0.1, type=float, help="w_seg")
 parser.add_argument("--w_reg", default=0.05, type=float, help="w_reg")
 parser.add_argument("--uncertain_region_thre", default=0.2 , type=float, help="uncertain_region_thre")
-parser.add_argument("--t_b1_mix_cam", default=0.7, type=float, help="t_b1_mix_cam")
-parser.add_argument("--t_b2_mix_cam", default=0.5, type=float, help="t_b2_mix_cam")
-
 
 parser.add_argument("--temp", default=0.5, type=float, help="temp")
 parser.add_argument("--momentum", default=0.9, type=float, help="temp")
@@ -86,11 +82,10 @@ parser.add_argument("--local-rank", type=int, default=0)
 parser.add_argument("--num_workers", default=10, type=int, help="num_workers")
 parser.add_argument('--backend', default='nccl')
 
-
-# os.environ['MASTER_ADDR'] = 'localhost'
-# os.environ['MASTER_PORT'] = '5680'
-# os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
-os.environ['CUDA_VISIBLE_DEVICES']='3,4,5'
+os.environ['MASTER_ADDR'] = 'localhost'
+os.environ['MASTER_PORT'] = '5680'
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+# os.environ['CUDA_VISIBLE_DEVICES']='0,1,2,'
 
 logging.getLogger().setLevel(logging.INFO)
 
@@ -189,8 +184,8 @@ def validate(model=None, data_loader=None, args=None):
 def train(args=None):
 
     torch.cuda.set_device(args.local_rank)
-    dist.init_process_group(backend=args.backend)
-    # dist.init_process_group(backend='nccl', init_method='env://', rank = 0, world_size = 1)
+    # dist.init_process_group(backend=args.backend)
+    dist.init_process_group(backend='nccl', init_method='env://', rank = 0, world_size = 1)
     logging.info("Total gpus: %d, samples per gpu: %d..."%(dist.get_world_size(), args.spg))
 
     time0 = datetime.datetime.now()
@@ -249,28 +244,25 @@ def train(args=None):
     )
     
 #pretrained_load——————————————————————————————————————————————————————————————————————————————————————————————————
-    # CPC_loss = CPCLoss().cuda()
-    # trained_state_dict = torch.load('/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/2024-07-26-21-45-19-184299/checkpoints/default_model_iter_2000.pth', map_location="cpu")
-    # new_state_dict = OrderedDict()
+    CPC_loss = CPCLoss().cuda()
+    trained_state_dict = torch.load('/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/74.0(crop = 80)/checkpoints/default_model_iter_8000.pth', map_location="cpu")
+    new_state_dict = OrderedDict()
     
-    # if 'model' in trained_state_dict:
-    #     model_state_dict = trained_state_dict['model']
-    #     for k, v in model_state_dict.items():
-    #         k = k.replace('module.', '')
-    #         new_state_dict[k] = v
-    # else:
-    #     for k, v in trained_state_dict.items():
-    #         k = k.replace('module.', '')
-    #         new_state_dict[k] = v
+    if 'model' in trained_state_dict:
+        model_state_dict = trained_state_dict['model']
+        for k, v in model_state_dict.items():
+            k = k.replace('module.', '')
+            new_state_dict[k] = v
+    else:
+        for k, v in trained_state_dict.items():
+            k = k.replace('module.', '')
+            new_state_dict[k] = v
 
-    # model.load_state_dict(state_dict=new_state_dict, strict=False)
-    # # if 'CPC_loss' in trained_state_dict:
-    # #     CPC_loss = trained_state_dict['CPC_loss']
+    model.load_state_dict(state_dict=new_state_dict, strict=False)
+    # if 'CPC_loss' in trained_state_dict:
+    #     CPC_loss = trained_state_dict['CPC_loss']
 
 
-
-    b1_contrast_prototype = ContrastLoss_prototype_instance()
-    b2_contrast_prototype = ContrastLoss_prototype_instance()
 
 
 #add param ——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
@@ -321,8 +313,13 @@ def train(args=None):
     train_loader_iter = iter(train_loader)
     avg_meter = AverageMeter()
 
+
+
+
+    b1_contrast_prototype = ContrastLoss_prototype_instance()
+    b2_contrast_prototype = ContrastLoss_prototype_instance()
     
-    n_crops = 10
+    n_crops = 1
     par = PAR(num_iter=10, dilations=[1,2,4,8,12,24]).cuda()
     
 
@@ -337,12 +334,13 @@ def train(args=None):
             img_name, inputs, cls_label, img_box, crops,image_origin = next(train_loader_iter)
 
         
-        # input_image = TF.to_pil_image(image_origin[0].permute(2,0,1))
-        # input_image.save('input_image.png')
-        # print(img_name)
+
 
         inputs = inputs.to(device, non_blocking=True)
         inputs_denorm = imutils.denormalize_img2(inputs.clone())
+        
+        
+        
         cls_label = cls_label.to(device, non_blocking=True)
 
         # get local crops from uncertain regions   multi scale cam 方法，返回的是一个multi scale混合的cam
@@ -357,43 +355,38 @@ def train(args=None):
         # roi_crops = crops[:2] + local_crops #全局的两张图 + local的多张图
 
 #get pseudo label --------------------------------------------------------------------------------------------------------------------------------
+        # b1_28x_cam = F.interpolate(b1_cams.detach(), size=(28,28), mode="bilinear", align_corners=False)
+        # b2_28x_cam = F.interpolate(b2_cams.detach(), size=(28,28), mode="bilinear", align_corners=False)
+        
+        # _28x_cam =0.5 * b1_28x_cam + 0.5 * b2_28x_cam
         _roi_mix_cam = 0.5 * b1_cams + 0.5 * b2_cams
-        
-        
-        roi_mix_valid_cam, _ = cam_to_label(_roi_mix_cam.detach(), cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=args.bkg_thre, high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index)
-        refined_roi_mix_pesudo_label = refine_cams_with_bkg_v2(par, inputs_denorm, cams=roi_mix_valid_cam, cls_labels=cls_label,  high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index, img_box=img_box, )
-        #训练加速
-        # _4x_cam = F.interpolate(_roi_mix_cam.detach(), size=(int(_roi_mix_cam.shape[2]/4),int(_roi_mix_cam.shape[3]/4)), mode="bilinear", align_corners=False)
-        # _4x_roi_mask = cam_to_roi_mask2(_4x_cam.detach(), cls_label=cls_label, low_thre=args.low_thre, hig_thre=args.high_thre)
-        
-        
         
         b1_roi_mask = cam_to_roi_mask2(_roi_mix_cam.detach(), cls_label=cls_label, low_thre=args.low_thre, hig_thre=args.high_thre)
         b2_roi_mask = cam_to_roi_mask2(_roi_mix_cam.detach(), cls_label=cls_label, low_thre=args.low_thre, hig_thre=args.high_thre)
+  
         
-
+        roi_mix_valid_cam, _ = cam_to_label(_roi_mix_cam.detach(), cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=args.bkg_thre, high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index)
+        refined_roi_mix_pesudo_label = refine_cams_with_bkg_v2(par, inputs_denorm, cams=roi_mix_valid_cam, cls_labels=cls_label,  high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index, img_box=img_box, )
+  
         
-        # _,b1_28x_pseudo_label = cam_to_label_resized(_roi_mix_cam.detach(), cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=args.bkg_thre, high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index,printornot=False,clip = False)
-        # _,b2_28x_pseudo_label = cam_to_label_resized(_roi_mix_cam.detach(), cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=args.bkg_thre, high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index,printornot=False,clip = False)
-        # #    pesudo_label,然后要根据pesudo label选块 [b, H, W]
-        # b1_seleted_patch_list = select_local_patch(b1_28x_pesudo_label)
-        # show_mask(b1_28x_pesudo_label[0])
-        # b2_seleted_patch_list = select_local_patch(b2_28x_pesudo_label)        
-        #(class, index)
         _28x_pseudo_label = ('#', '#')
-
 
 #get_local_pic_to_encode------------------------------------------------------------------------------
 
-
-        
-        n_crops = args.local_crop_num
+        # input_image = TF.to_pil_image(inputs[0])
+        # input_image.save('input_image_norm.png')
+        # input_image = TF.to_pil_image(inputs_denorm[0])
+        # input_image.save('input_image.png')
+        # # b1_local_crops, b1_flags, b1_box= single_bg_fg_crop(images=inputs, cls_label = cls_label,roi_mask=b1_28x_pseudo_label, crop_num=2, crop_size=args.local_crop_size)
+        # # b2_local_crops, b2_flags, b2_box= single_bg_fg_crop(images=inputs, cls_label = cls_label,roi_mask=b2_28x_pseudo_label, crop_num=2, crop_size=args.local_crop_size)
+        # # local_pic = (b1_local_crops , b2_local_crops)
+        show_mask_cam(b1_cams,cls_label,args.low_thre,args.high_thre, 'b1_cam')
+        # show_mask_cam(_roi_mix_cam,cls_label,args.low_thre,args.high_thre, 'roi_mix_cam')
         b1_local_crops, b1_flags, b1_box= single_instance_crop_v2(images=inputs, cls_label = cls_label,roi_mask_28x=b1_roi_mask, crop_num=n_crops, crop_size=args.local_crop_size, refine_pesudo_label= refined_roi_mix_pesudo_label)
         b2_local_crops, b2_flags, b2_box= single_instance_crop_v2(images=inputs, cls_label = cls_label,roi_mask_28x=b2_roi_mask, crop_num=n_crops, crop_size=args.local_crop_size, refine_pesudo_label= refined_roi_mix_pesudo_label)
         
-        
         local_pic = (b1_local_crops , b2_local_crops)
-        # print(len(b1_local_crops))
+        
 # model forward-------------------------------------------------------------------------------------------------------------------------------
 
         cls, segs, fmap, cls_aux, cam_12th, cls_token, contrast_feature = model(inputs, _28x_pseudo_label,crops='#', n_iter=n_iter,select_k = 1,return_cls_token = True,local_pic = local_pic)    
@@ -408,25 +401,32 @@ def train(args=None):
         # b1_contrast_feature = contrast_feature
 
 #contrast learning -----------------------------------------------------------------------
-
-        if n_iter >= 3000:
-            b1_prototyped_loss = b1_contrast_prototype(b1_cls_token,b1_contrast_feature,cls_label,b1_flags)
-            b2_prototyped_loss = b2_contrast_prototype(b2_cls_token,b2_contrast_feature,cls_label,b2_flags)
-            contrast_loss = (b1_prototyped_loss + b2_prototyped_loss)
-            print("prototype",contrast_loss) 
-        else:
-            contrast_loss = torch.tensor(0)
-
-
-        # contrast_loss = torch.tensor(0)
+        
+        
+        b1_prototyped_loss = b1_contrast_prototype(b1_cls_token,b1_contrast_feature,cls_label,b1_flags)
+        b2_prototyped_loss = b2_contrast_prototype(b2_cls_token,b2_contrast_feature,cls_label,b2_flags)
+        contrast_loss = (b1_prototyped_loss + b2_prototyped_loss)
+        print("prototype",contrast_loss) 
+        contrast_loss = torch.tensor(0)
                
 # discrepancy loss ----------------------------------------------------------------
 
+        # fmap_1_flat = b1_fmap.view(b1_fmap.shape[0], b1_fmap.shape[1], -1)
+        # fmap_2_flat = b2_fmap.view(b2_fmap.shape[0], b2_fmap.shape[1], -1)
 
-        network_sim_loss = torch.tensor(0)
+        # cross_network_cos_simi = torch.nn.CosineSimilarity(dim=-1, eps=1e-6)
+        # b1_sim_loss = 1 + torch.abs(cross_network_cos_simi(fmap_1_flat.detach(), fmap_2_flat).mean())
+        # b2_sim_loss = 1 + torch.abs(cross_network_cos_simi(fmap_2_flat.detach(), fmap_1_flat).mean())
+
+        cross_network_cos_simi = torch.nn.CosineSimilarity(dim=-1, eps=1e-6)
+        b1_sim_loss = 1 - torch.abs(cross_network_cos_simi(b1_cls_token.detach(), b2_cls_token).mean())
+        b2_sim_loss = 1 - torch.abs(cross_network_cos_simi(b2_cls_token.detach(), b1_cls_token).mean())
+        
+        network_sim_loss = b1_sim_loss + b2_sim_loss
+        # network_sim_loss = torch.tensor(0)
+
 
 # branch2 : adaptive-label-bce + cls loss part-------------------------------------------------------------------------------------------------------------------
-
 
         # valid_aux_cam, _ = cam_to_label(cams_aux.detach(), cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=args.bkg_thre, high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index)
         if n_iter <= 4000:
@@ -438,16 +438,12 @@ def train(args=None):
             # import math
             # shedule = math.cos((n_iter-4000)/4000) * 0.1
             per_pic_thre = get_per_pic_thre(b2_refined_aux_pesudo_label, gd_label=cls_label, uncertain_region_thre = shedule)
-        
-        # aux_pesedo_show = b2_refined_aux_pesudo_label = cam_to_roi_mask2(b2_cams_aux.detach(), cls_label=cls_label, low_thre=args.low_thre, hig_thre=args.high_thre)
-        # per_pic_thre = get_per_pic_thre(b2_refined_aux_pesudo_label, gd_label=cls_label, uncertain_region_thre = args.uncertain_region_thre)
+       
         b2_spacial_bce_loss = get_spacial_bce_loss(b2_cam_12th, cls_label, per_pic_thre)
         b2_cls_loss = F.multilabel_soft_margin_loss(b2_cls, cls_label)
         b2_cls_loss_aux = F.multilabel_soft_margin_loss(b2_cls_aux, cls_label)
 
 
-    
-#show mask --------------------------------------------------------------------------------------------------------------
 
 # branch1 : cls-loss-------------------------------------------------------------------------------------------------------------------
         b1_cls_loss = F.multilabel_soft_margin_loss(b1_cls, cls_label)
@@ -467,22 +463,78 @@ def train(args=None):
         
         
 #b1 b2 generate pesudo-label and seg------------------------------------------------------------------------------------------------------------------------------------------
-        b1_mix_cams = args.t_b1_mix_cam * b1_cams.detach() + (1-args.t_b1_mix_cam) * b2_cams.detach()
-        b1_valid_cam, _ = cam_to_label(b1_mix_cams.detach(), cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=args.bkg_thre, high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index)
+        b1_mix_cam = 0.7 * b1_cams.detach() + 0.3 * b2_cams.detach()
+        b1_valid_cam, _ = cam_to_label(b1_cams.detach(), cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=args.bkg_thre, high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index)
         b1_refined_pseudo_label = refine_cams_with_bkg_v2(par, inputs_denorm, cams=b1_valid_cam, cls_labels=cls_label,  high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index, img_box=img_box, )
         b2_segs = F.interpolate(b2_segs, size=b1_refined_pseudo_label.shape[1:], mode='bilinear', align_corners=False)
         #segs是粗分割lfov的结果 refined_pseudo_label是自己生成的伪标签（cam是最后给出的cam）
         b2_seg_loss = get_seg_loss(b2_segs, b1_refined_pseudo_label.type(torch.long), ignore_index=args.ignore_index)
         #cross head
         
-        b2_mix_cams = args.t_b2_mix_cam * b2_cams.detach() + (1-args.t_b2_mix_cam) * b1_cams.detach()
-        b2_valid_cam, _ = cam_to_label(b2_mix_cams.detach(), cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=args.bkg_thre, high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index)
+        b2_mix_cam = 0.7 * b2_cams.detach() + 0.3 * b1_cams.detach()
+        b2_valid_cam, _ = cam_to_label(b2_cams.detach(), cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=args.bkg_thre, high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index)
         b2_refined_pseudo_label = refine_cams_with_bkg_v2(par, inputs_denorm, cams=b2_valid_cam, cls_labels=cls_label,  high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index, img_box=img_box, )
         b1_segs = F.interpolate(b1_segs, size=b2_refined_pseudo_label.shape[1:], mode='bilinear', align_corners=False)
         #segs是粗分割lfov的结果 refined_pseudo_label是自己生成的伪标签（cam是最后给出的cam）
         b1_seg_loss = get_seg_loss(b1_segs, b2_refined_pseudo_label.type(torch.long), ignore_index=args.ignore_index)
         
         seg_loss = b1_seg_loss + b2_seg_loss
+        
+#seg_result_consistence_loss--------------------------------------------------------------------------------
+        # b1_seg_consistence_loss = get_seg_consistence_loss(b1_segs,b2_segs.detach())
+        # b2_seg_consistence_loss = get_seg_consistence_loss(b2_segs,b1_segs.detach())
+        
+        # seg_consistence_loss = 0.4 * b1_seg_consistence_loss + 0.6 * b2_seg_consistence_loss
+
+#cam similarity --------------------------------------------------------------
+        
+
+
+    
+        
+        
+        
+#show mask --------------------------------------------------------------------------------------------------------------
+        from PIL import Image, ImageOps
+        show_mask_cam(b1_cams,cls_label,args.low_thre,args.high_thre, 'b1_cam')
+        show_mask_cam(b2_cams,cls_label,args.low_thre,args.high_thre, 'b2_cam')
+        show_mask_cam(b1_mix_cam,cls_label,args.low_thre,args.high_thre, 'b1_mix_cam')
+        show_mask_cam(b2_mix_cam,cls_label,args.low_thre,args.high_thre, 'b2_mix_cam')
+
+        input_image = TF.to_pil_image(inputs[0])
+        input_image.save('input_image.png')
+        
+        input_image = TF.to_pil_image(inputs_denorm[0])
+        input_image.save('input_image denorm.png')
+        # for i in range(len(b2_box)):
+        #     new_box = []
+        #     for item in b2_box[i]:
+        #         item = max(item - 48,0)
+        #         item = int(item)
+        #         new_box.append(item)
+        
+        #     b1_crop_image = inputs_denorm[0,:,new_box[0]:new_box[1],new_box[2]:new_box[3]]
+        #     crop_image = TF.to_pil_image(b1_crop_image)
+        #     crop_image.save('crop_image_' + str(i) + '.png')
+
+
+        show_seg(b1_segs,cls_label,args.low_thre,args.high_thre, 'b1_seg')
+        show_seg(b2_segs,cls_label,args.low_thre,args.high_thre, 'b2_seg')        
+
+        import matplotlib.pyplot as plt
+        b1_refined_pseudo_label[b1_refined_pseudo_label == 0] = -2
+        plt.imshow(b1_refined_pseudo_label.squeeze(0).cpu(), cmap='jet', vmin=-2, vmax=20)
+        plt.colorbar()
+        plt.title("seg" + "refine")
+        
+        plt.savefig('output-image'+ "/" + f'seg' + 'refine' + '.png')
+        plt.close()
+
+
+
+
+
+        
         
         
 #b1 b2 ptc loss-------------------------------------------------------------------------------------------------------------------------------------
@@ -504,18 +556,18 @@ def train(args=None):
 
 #train------------------------------------------------------------------------------------------------------------------------
         if n_iter <= 2000:
-            loss = 1.0 * (b1_cls_loss + b2_cls_loss) + 1.0 * (b1_cls_loss_aux + b2_cls_loss_aux) + args.w_ptc * ptc_loss  + 0.0 * seg_loss
-        elif n_iter <= 3000:
-            loss = 1.0 *  (b1_cls_loss + b2_cls_loss) + 1.0 * (b1_cls_loss_aux + b2_cls_loss_aux) + args.w_ptc * ptc_loss + args.w_seg * seg_loss + 0.1 * network_sim_loss + 0.05 * contrast_loss
+            loss = 1.0 * (b1_cls_loss + b2_cls_loss) + 1.0 * (b1_cls_loss_aux + b2_cls_loss_aux) + args.w_ptc * ptc_loss  + 0.0 * seg_loss + 0.1 * network_sim_loss + 0.1 * contrast_loss
+        elif n_iter <= 3500:
+            loss = 1.0 *  (b1_cls_loss + b2_cls_loss) + 1.0 * (b1_cls_loss_aux + b2_cls_loss_aux) + args.w_ptc * ptc_loss + args.w_seg * seg_loss + 0.1 * network_sim_loss + 0.2 * contrast_loss
         else:
-            loss = (0.4 * b2_spacial_bce_loss + 0.6 * b2_cls_loss) + 1.0 * b1_cls_loss+ 1.0 * (b1_cls_loss_aux + b2_cls_loss_aux) + args.w_ptc * ptc_loss + args.w_seg * seg_loss + 0.1 * network_sim_loss + 0.05 * contrast_loss
+            loss = (0.5 * b2_spacial_bce_loss + 0.5 * b2_cls_loss) + 1.0 * b1_cls_loss+ 1.0 * (b1_cls_loss_aux + b2_cls_loss_aux) + args.w_ptc * ptc_loss + args.w_seg * seg_loss + 0.1 * network_sim_loss + 0.2 * contrast_loss
 
         # 如果你增加了 cls_loss 的权重值，使其在整体优化中起到更大的作用，那么模型在训练过程中会更加关注优化 cls_loss
         cls_pred = (b1_cls > 0).type(torch.int16)
         cls_score = evaluate.multilabel_score(cls_label.cpu().numpy()[0], cls_pred.cpu().numpy()[0])
 
         cls_loss = (b1_cls_loss + b2_cls_loss)/2
-        cls_loss_aux = (b1_cls_loss_aux + b2_cls_loss_aux) / 2 
+        cls_loss_aux = (b1_cls_loss_aux + b2_cls_loss_aux) / 2
         spacial_bce_loss = b2_spacial_bce_loss
 
         avg_meter.add({
@@ -528,7 +580,6 @@ def train(args=None):
             'dcc_loss': cpc_loss.item(),
             'spacial_bce_loss' :spacial_bce_loss.item(),
             'network_sim_loss': network_sim_loss.item(),
-            'contrast_loss':contrast_loss.item()
         })
 
         optim.zero_grad()
@@ -536,7 +587,7 @@ def train(args=None):
         loss.backward()
         # torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optim.step()
-
+        torch.cuda.empty_cache()  # 清理CUDA显存中的垃圾数据
         # if n_iter % 100 == 0:
         #     print('n_iter:',n_iter)
         #     print('cls_loss',cls_loss,'\n','cls_loss_aux',cls_loss_aux,'\n','seg_loss',seg_loss,'\n','aur_loss',ctc_loss,'\n','\n','ptc_loss',ptc_loss,'dcc_loss',cpc_loss,'spacial_bce_loss',spacial_bce_loss)
@@ -547,7 +598,7 @@ def train(args=None):
                 cur_lr = optim.param_groups[0]['lr']
 
 
-                logging.info("Iter: %d; Elasped: %s; ETA: %s; LR: %.3e; cls_loss: %.4f, cls_loss_aux: %.4f, ptc_loss: %.4f, spacial_bce_loss: %.4f..., network_sim_loss: %.4f... , CL: %.4f... " % (n_iter + 1, delta, eta, cur_lr, avg_meter.pop('cls_loss'), avg_meter.pop('cls_loss_aux'), avg_meter.pop('ptc_loss'), avg_meter.pop('spacial_bce_loss'),avg_meter.pop('network_sim_loss'),avg_meter.pop('contrast_loss')))
+                logging.info("Iter: %d; Elasped: %s; ETA: %s; LR: %.3e; cls_loss: %.4f, cls_loss_aux: %.4f, ptc_loss: %.4f, aur_loss: %.4f, dcc_loss: %.4f..., spacial_bce_loss: %.4f...,network_sim_loss: %.4f... " % (n_iter + 1, delta, eta, cur_lr, avg_meter.pop('cls_loss'), avg_meter.pop('cls_loss_aux'), avg_meter.pop('ptc_loss'), avg_meter.pop('aur_loss'), avg_meter.pop('dcc_loss'),avg_meter.pop('spacial_bce_loss'),avg_meter.pop('network_sim_loss')))
 
         if (n_iter + 1) % 2000 == 0:
             # ckpt_name = os.path.join(args.ckpt_dir, "w/oPSA_model_iter_%d.pth" % (n_iter + 1))
@@ -591,7 +642,7 @@ if __name__ == "__main__":
     args.ckpt_dir = os.path.join(args.work_dir, "checkpoints")
     args.pred_dir = os.path.join(args.work_dir, "predictions")
 
-    if args.local_rank ==0:
+    if args.local_rank ==10:
         os.makedirs(args.ckpt_dir, exist_ok=True)
         os.makedirs(args.pred_dir, exist_ok=True)
 
