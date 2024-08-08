@@ -6,6 +6,7 @@ import math
 import matplotlib.pyplot as plt
 import torchvision.transforms.functional as TF
 import random
+import cv2
 #448尺度下
 def cam_to_label(cam, cls_label, img_box=None, bkg_thre=None, high_thre=None, low_thre=None, ignore_mid=False, ignore_index=None):
     b, c, h, w = cam.shape
@@ -1012,7 +1013,7 @@ def single_bg_fg_crop_denoise_v3(images,cls_label = None, roi_mask_28x=None, cro
     # padded_image = F.pad(images, padding, mode='constant', value=0)
 
     b, c, h, w = images.shape
-    denoise_thre = 0.10
+    denoise_thre = 0.25
     
     box = []
         # 2 8 3 96 96 
@@ -1129,13 +1130,12 @@ def single_instance_crop(images,cls_label = None, roi_mask_28x=None, crop_num=1,
     # padded_image = F.pad(images, padding, mode='constant', value=0)
 
     b, c, h, w = images.shape
-    denoise_thre = 0.10
     
     box = []
         # 2 8 3 96 96 
     num_class = 20
     flags = []
-    #roi middle crop 
+    #roi middle crop s
 
     for i in range(b):
         for j in range(crop_num):
@@ -1156,14 +1156,248 @@ def single_instance_crop(images,cls_label = None, roi_mask_28x=None, crop_num=1,
             
             crop_image[:,crop_idx] = images[i][:,crop_idx]
             
+            #crop_image = F.interpolate(crop_image.detach(), size=(int(h/4),int(w/4)), mode="bilinear", align_corners=False)
+            
             crops.append(crop_image)
             flags.append(cls+1)
         
+            crop_img = crops[-1]
+            crop_img = TF.to_pil_image(crop_img)
+            crop_img.save('crop_img_in_block_fg_crop.png')
 
 
 
 
     return crops, flags, box
+
+
+
+def single_instance_crop_v2(images,cls_label = None, roi_mask_28x=None, crop_num=1, crop_size=64, refine_pesudo_label= None):
+    #image 2 3 448 448
+    #roi_mask 448 448 
+    crops = []
+    
+    margin = int(crop_size/2)
+    padding = (margin, margin, margin, margin)
+    # padded_image = F.pad(images, padding, mode='constant', value=0)
+
+    b, c, h, w = images.shape
+    refine_pesudo_label[refine_pesudo_label == 255] = -1
+    refine_pesudo_label[refine_pesudo_label == 0] = -2
+        
+    box = []
+        # 2 8 3 96 96 
+    num_class = 20
+    flags = []
+    #roi middle crop 
+
+    for i in range(b):
+        for j in range(crop_num):
+            current_mask = refine_pesudo_label[i]
+            cls_index = torch.unique(current_mask)
+            cls_index = cls_index.tolist()
+            cls_index = [x for x in cls_index if x>=0]
+            if len(cls_index):
+                cls = random.sample(cls_index,1)[0]
+            else:
+                cls_index = torch.where(cls_label[i] == 1)
+                cls = random.sample(cls_index[0].tolist(),1)[0]
+            
+            crop_idx = current_mask == cls 
+            crop_uncertain = current_mask == -1
+            crop_idx = crop_idx | crop_uncertain
+            crop_image = torch.zeros((3,h,w)).cuda()
+            
+            crop_image[:,crop_idx] = images[i][:,crop_idx]
+            
+            # crop_image = F.interpolate(crop_image.unsqueeze(0).detach(), size=(int(h/4),int(w/4)), mode="bilinear", align_corners=False)
+            # crop_image = crop_image.squeeze(0)
+            
+            crops.append(crop_image)
+            flags.append(int(cls))
+            
+            
+            # crop_img = crops[-1]
+            # crop_img = TF.to_pil_image(crop_img)
+            # crop_img.save('crop_img_in_block_fg_crop.png')
+
+
+
+
+
+
+    return crops, flags, box
+
+
+def single_instance_crop_all_cls(images,cls_label = None, roi_mask_28x=None, crop_num=1, crop_size=64, refine_pesudo_label= None):
+    #image 2 3 448 448
+    #roi_mask 448 448 
+    crops = []
+    
+    margin = int(crop_size/2)
+    padding = (margin, margin, margin, margin)
+    # padded_image = F.pad(images, padding, mode='constant', value=0)
+
+    b, c, h, w = images.shape
+    refine_pesudo_label[refine_pesudo_label == 255] = -1
+    refine_pesudo_label[refine_pesudo_label == 0] = -2
+        
+    box = []
+        # 2 8 3 96 96 
+    num_class = 20
+    flags = []
+    #roi middle crop 
+
+    for i in range(b):
+        current_mask = refine_pesudo_label[i]
+        cls_index = torch.unique(current_mask)
+        cls_index = cls_index.tolist()
+        cls_index = [x for x in cls_index if x>=0]
+        if len(cls_index):
+            cls_index = cls_index
+        else:
+            cls_index = torch.where(cls_label[i] == 1)
+            cls_index = cls_index[0].tolist()
+            
+        for cls in cls_index:      
+            crop_idx = current_mask == cls 
+            crop_uncertain = current_mask == -1
+            crop_idx = crop_idx | crop_uncertain
+            crop_image = torch.zeros((3,h,w)).cuda()
+            
+            crop_image[:,crop_idx] = images[i][:,crop_idx]
+            
+            crop_image = F.interpolate(crop_image.unsqueeze(0).detach(), size=(int(h/2),int(w/2)), mode="bilinear", align_corners=False)
+            crop_image = crop_image.squeeze(0)
+            
+            crops.append(crop_image)
+            flags.append(int(cls))
+            
+            
+            # crop_img = crops[-1]
+            # crop_img = TF.to_pil_image(crop_img)
+            # crop_img.save('crop_img_in_block_fg_crop.png')
+
+
+    return crops, flags, box
+
+
+def single_instance_cropv3(images,cls_label = None, roi_mask_28x=None, crop_num=1, crop_size=64, refine_pesudo_label= None):
+    #image 2 3 448 448
+    #roi_mask 448 448 
+    crops = []
+    all_cls_masked_crops = []
+    
+    margin = int(crop_size/2)
+    padding = (margin, margin, margin, margin)
+    # padded_image = F.pad(images, padding, mode='constant', value=0)
+
+    b, c, h, w = images.shape
+    refine_pesudo_label[refine_pesudo_label == 255] = -1
+    refine_pesudo_label[refine_pesudo_label == 0] = -2
+        
+    box = []
+        # 2 8 3 96 96 
+    num_class = 20
+    flags = []
+    #roi middle crop 
+
+    for i in range(b):
+        current_mask = refine_pesudo_label[i]
+        cls_index = torch.unique(current_mask)
+        cls_index = cls_index.tolist()
+        cls_index = [x for x in cls_index if x>=0]
+        if len(cls_index):
+            cls = random.sample(cls_index,1)[0]
+        else:
+            cls_index = torch.where(cls_label[i] == 1)
+            cls = random.sample(cls_index[0].tolist(),1)[0]
+        
+        crop_idx = current_mask == cls 
+        crop_uncertain = current_mask == -1
+        crop_idx = crop_idx | crop_uncertain
+        crop_image = torch.zeros((3,h,w)).cuda()
+        
+        crop_image[:,crop_idx] = images[i][:,crop_idx]
+        
+        crop_image = F.interpolate(crop_image.unsqueeze(0).detach(), size=(int(h/2),int(w/2)), mode="bilinear", align_corners=False)
+        
+        crops.append(crop_image.squeeze(0))
+        flags.append(int(cls))
+        
+        all_cls_crop_idx = current_mask != -2
+        all_cls_crop_image = torch.zeros((3,h,w)).cuda()
+
+        all_cls_crop_image[:,all_cls_crop_idx] = images[i][:,all_cls_crop_idx]
+        all_cls_crop_image = F.interpolate(all_cls_crop_image.unsqueeze(0).detach(), size=(int(h/2),int(w/2)), mode="bilinear", align_corners=False)
+        
+        all_cls_masked_crops.append(all_cls_crop_image.squeeze(0))
+
+    
+        
+        # crop_img = crops[-1]
+        # crop_img = TF.to_pil_image(crop_img)
+        # crop_img.save('crop_img_in_block_fg_crop.png')
+        # crop_img = all_cls_masked_crops[-1]
+        # crop_img = TF.to_pil_image(crop_img)
+        # crop_img.save('crop_img_in_block_fg_crop.png')
+
+
+    return crops, flags, box , all_cls_masked_crops
+
+
+
+def single_instance_crop_down_scale(images,cls_label = None, roi_mask_28x=None, crop_num=1, crop_size=64, refine_pesudo_label= None, down_scale = 4):
+    #image 2 3 448 448
+    #roi_mask 448 448 
+    crops = []
+    
+    margin = int(crop_size/2)
+    padding = (margin, margin, margin, margin)
+    # padded_image = F.pad(images, padding, mode='constant', value=0)
+
+    b, c, h, w = images.shape
+    refine_pesudo_label[refine_pesudo_label == 255] = -1
+    refine_pesudo_label[refine_pesudo_label == 0] = -2
+        
+    box = []
+        # 2 8 3 96 96 
+    num_class = 20
+    flags = []
+    #roi middle crop 
+
+    for i in range(b):
+        current_mask = refine_pesudo_label[i]
+        cls_index = torch.unique(current_mask)
+        cls_index = cls_index.tolist()
+        cls_index = [x for x in cls_index if x>=0]
+        if len(cls_index):
+            cls_index = cls_index
+        else:
+            cls_index = torch.where(cls_label[i] == 1)[0].tolist()
+            
+            
+        for cls in cls_index:  
+            crop_idx = current_mask == cls 
+            crop_uncertain = current_mask == -1
+            crop_idx = crop_idx | crop_uncertain
+            crop_image = torch.zeros((3,h,w)).cuda()
+            
+            crop_image[:,crop_idx] = images[i][:,crop_idx]
+            
+            crop_image = F.interpolate(crop_image.detach(), size=(int(h/down_scale),int(w/down_scale)), mode="bilinear", align_corners=False)
+            
+            crops.append(crop_image)
+            flags.append(int(cls))
+            
+            
+            # crop_img = crops[-1]
+            # crop_img = TF.to_pil_image(crop_img)
+            # crop_img.save('crop_img_in_block_fg_crop.png')
+
+
+    return crops, flags, box
+
 
 
 

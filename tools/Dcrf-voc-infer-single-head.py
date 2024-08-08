@@ -24,7 +24,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--infer_set", default="val", type=str, help="infer_set")
 parser.add_argument("--pooling", default="gmp", type=str, help="pooling method")
 # parser.add_argument("--model_path", default="workdir_voc_final2/2022-11-04-01-50-48-441426/checkpoints/model_iter_20000.pth", type=str, help="model_path")
-parser.add_argument("--model_path", default="/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/2024-07-16-12-44-02-908636/checkpoints/default_model_iter_8000.pth", type=str, help="model_path")
+parser.add_argument("--model_path", default="/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/75.6(best cam best seg)/checkpoints/default_model_iter_8000.pth", type=str, help="model_path")
 
 parser.add_argument("--backbone", default='vit_base_patch16_224', type=str, help="vit_base_patch16_224")
 parser.add_argument("--data_folder", default='../VOC2012', type=str, help="dataset folder")
@@ -39,7 +39,7 @@ def _validate(model=None, data_loader=None, args=None):
     model.eval()
     color_map = plt.get_cmap("Blues")
 
-    with torch.no_grad(), torch.cuda.device(0):
+    with torch.no_grad(), torch.cuda.device(3):
         model.cuda()
 
         gts, seg_pred = [], []
@@ -58,16 +58,16 @@ def _validate(model=None, data_loader=None, args=None):
                 _h, _w = int(h*sc), int(w*sc)
 
                 _inputs  = F.interpolate(inputs, size=[_h, _w], mode='bilinear', align_corners=False)
-                inputs_cat = torch.cat([_inputs, _inputs.flip(-1)], dim=0)
+                # inputs_cat = torch.cat([_inputs, _inputs.flip(-1)], dim=0)
 
-                segs = model(inputs_cat,)[1]
+                segs = model(_inputs,)[1]
 
                 segs = F.interpolate(segs, size=labels.shape[1:], mode='bilinear', align_corners=False)
 
                 # seg = torch.max(segs[:1,...], segs[1:,...].flip(-1))
-                seg = segs[:1,...] + segs[1:,...].flip(-1)
+                # seg = segs[:1,...] + segs[1:,...].flip(-1)
 
-                seg_list.append(seg)
+                seg_list.append(segs)
             seg = torch.max(torch.stack(seg_list, dim=0), dim=0)[0]
             
             seg_pred += list(torch.argmax(seg, dim=1).cpu().numpy().astype(np.int16))
@@ -171,7 +171,7 @@ def validate(args=None):
 
 
     trained_state_dict = torch.load(args.model_path, map_location="cpu")
-    model.to('cuda:5')
+    # model.to('cuda:5')
     new_state_dict = OrderedDict()
 
     if 'model' in trained_state_dict:

@@ -23,7 +23,7 @@ from utils.pyutils import AverageMeter, format_tabs
 parser = argparse.ArgumentParser()
 parser.add_argument("--bkg_thre", default=0.5, type=float, help="work_dir")
 
-parser.add_argument("--model_path", default=".", type=str, help="model_path")
+parser.add_argument("--model_path", default="/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/75.8(best cam best seg)/checkpoints/default_model_iter_8000.pth", type=str, help="model_path")
 
 parser.add_argument("--backbone", default='vit_base_patch16_224', type=str, help="vit_base_patch16_224")
 parser.add_argument("--pooling", default='gmp', type=str, help="pooling choice for patch tokens")
@@ -33,7 +33,7 @@ parser.add_argument("--data_folder", default='../VOC2012', type=str, help="datas
 parser.add_argument("--list_folder", default='../datasets/voc', type=str, help="train/val/test list file")
 parser.add_argument("--num_classes", default=21, type=int, help="number of classes")
 parser.add_argument("--ignore_index", default=255, type=int, help="random index")
-parser.add_argument("--infer_set", default="val", type=str, help="infer_set")
+parser.add_argument("--infer_set", default="train", type=str, help="infer_set")
 
 
 def _validate(model=None, data_loader=None, args=None):
@@ -48,7 +48,7 @@ def _validate(model=None, data_loader=None, args=None):
     os.makedirs(cam_dir, exist_ok=True)
     color_map = plt.get_cmap("jet")
 
-    with torch.no_grad(), torch.cuda.device(0):
+    with torch.no_grad(), torch.cuda.device(3):
         model.cuda()
 
         gts, cams, aux_cams = [], [], []
@@ -65,7 +65,7 @@ def _validate(model=None, data_loader=None, args=None):
             cls_label = cls_label.cuda()
 
             ###
-            _cams, _cams_aux = multi_scale_cam2(model, inputs, [1.0, 0.5, 1.5])
+            _cams, _cams_aux = multi_scale_cam2(model, inputs, [1.0,0.5,0.75,1.25,1.5,1.75,2.0])
             resized_cam = F.interpolate(_cams, size=labels.shape[1:], mode='bilinear', align_corners=False)
             resized_cam_aux = F.interpolate(_cams_aux, size=labels.shape[1:], mode='bilinear', align_corners=False)
 
@@ -77,6 +77,8 @@ def _validate(model=None, data_loader=None, args=None):
 
             cam_np = torch.max(resized_cam[0], dim=0)[0].cpu().numpy()
             cam_aux_np = torch.max(resized_cam_aux[0], dim=0)[0].cpu().numpy()
+
+            cam_pesudo_label = cam_label
 
             # cam_rgb = color_map(cam_np)[:,:,:3] * 255
             # cam_aux_rgb = color_map(cam_aux_np)[:,:,:3] * 255
@@ -90,7 +92,7 @@ def _validate(model=None, data_loader=None, args=None):
             cams += list(cam_label.cpu().numpy().astype(np.int16))
             gts += list(labels.cpu().numpy().astype(np.int16))
             aux_cams += list(cam_aux_label.cpu().numpy().astype(np.int16))
-
+            # np.save(cam_dir + "/" + name[0] + '.npy', {'high_res':resized_cam[0].cpu().numpy(), 'keys':cls_label[0].cpu().numpy()})
     cam_score = evaluate.scores(gts, cams)
     cam_aux_score = evaluate.scores(gts, aux_cams)
     
@@ -123,16 +125,22 @@ def validate(args=None):
         aux_layer=-3,
     )
 
-    trained_state_dict = torch.load('/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/75.8(best cam best seg)/checkpoints/default_model_iter_8000.pth', map_location="cpu")
+    trained_state_dict = torch.load(args.model_path, map_location="cpu")
 
     new_state_dict = OrderedDict()
-    for k, v in trained_state_dict.items():
-        k = k.replace('module.', '')
-        new_state_dict[k] = v
 
-    print(model.load_state_dict(state_dict=new_state_dict, strict=True))
+    if 'model' in trained_state_dict:
+        model_state_dict = trained_state_dict['model']
+        for k, v in model_state_dict.items():
+            k = k.replace('module.', '')
+            new_state_dict[k] = v
+    else:
+        for k, v in trained_state_dict.items():
+            k = k.replace('module.', '')
+            new_state_dict[k] = v
+    model.load_state_dict(state_dict=new_state_dict, strict=True)
     model.eval()
-
+    
     results = _validate(model=model.eval_branch('b1'), data_loader=val_loader, args=args)
     torch.cuda.empty_cache()
 

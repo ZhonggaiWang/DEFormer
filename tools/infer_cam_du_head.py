@@ -23,7 +23,7 @@ from utils.pyutils import AverageMeter, format_tabs
 parser = argparse.ArgumentParser()
 parser.add_argument("--bkg_thre", default=0.5, type=float, help="work_dir")
 
-parser.add_argument("--model_path", default=".", type=str, help="model_path")
+parser.add_argument("--model_path", default="/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/75.8(best cam best seg)/checkpoints/default_model_iter_8000.pth", type=str, help="model_path")
 
 parser.add_argument("--backbone", default='vit_base_patch16_224', type=str, help="vit_base_patch16_224")
 parser.add_argument("--pooling", default='gmp', type=str, help="pooling choice for patch tokens")
@@ -48,7 +48,7 @@ def _validate(model=None, data_loader=None, args=None):
     os.makedirs(cam_dir, exist_ok=True)
     color_map = plt.get_cmap("jet")
 
-    with torch.no_grad(), torch.cuda.device(0):
+    with torch.no_grad(), torch.cuda.device(4):
         model.cuda()
 
         gts, cams, aux_cams = [], [], []
@@ -65,7 +65,12 @@ def _validate(model=None, data_loader=None, args=None):
             cls_label = cls_label.cuda()
 
             ###
-            _cams, _cams_aux = multi_scale_cam2(model, inputs, [1.0, 0.5, 1.5])
+            b1_cams, b1_cams_aux = multi_scale_cam2(model.eval_branch('b1'), inputs, [1.0,0.5,0.75,1.25,1.5,1.75,2.0])
+            b2_cams, b2_cams_aux = multi_scale_cam2(model.eval_branch('b2'), inputs, [1.0,0.5,0.75,1.25,1.5,1.75,2.0])  
+            
+            _cams = 0.7 * b1_cams + 0.3 * b2_cams
+            _cams_aux = 0.7 * b1_cams_aux + 0.3 *b2_cams_aux
+            
             resized_cam = F.interpolate(_cams, size=labels.shape[1:], mode='bilinear', align_corners=False)
             resized_cam_aux = F.interpolate(_cams_aux, size=labels.shape[1:], mode='bilinear', align_corners=False)
 
@@ -123,17 +128,23 @@ def validate(args=None):
         aux_layer=-3,
     )
 
-    trained_state_dict = torch.load('/home/zhonggai/python-work-space/DEFormer/DEFormer/scripts/work_dir_voc_wseg/75.8(best cam best seg)/checkpoints/default_model_iter_8000.pth', map_location="cpu")
+    trained_state_dict = torch.load(args.model_path, map_location="cpu")
 
     new_state_dict = OrderedDict()
-    for k, v in trained_state_dict.items():
-        k = k.replace('module.', '')
-        new_state_dict[k] = v
 
-    print(model.load_state_dict(state_dict=new_state_dict, strict=True))
+    if 'model' in trained_state_dict:
+        model_state_dict = trained_state_dict['model']
+        for k, v in model_state_dict.items():
+            k = k.replace('module.', '')
+            new_state_dict[k] = v
+    else:
+        for k, v in trained_state_dict.items():
+            k = k.replace('module.', '')
+            new_state_dict[k] = v
+    model.load_state_dict(state_dict=new_state_dict, strict=True)
     model.eval()
-
-    results = _validate(model=model.eval_branch('b1'), data_loader=val_loader, args=args)
+    
+    results = _validate(model=model, data_loader=val_loader, args=args)
     torch.cuda.empty_cache()
 
     print(results)
